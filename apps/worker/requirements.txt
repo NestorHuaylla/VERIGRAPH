@@ -1,0 +1,9 @@
+celery[redis]
+redis
+pydantic-settings
+httpx
+python-dotenv
+pillow
+boto3
+neo4j
+

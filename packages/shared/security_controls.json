@@ -1,0 +1,25 @@
+{
+  "controls": [
+    {
+      "code": "input_validation",
+      "label": "Input validation",
+      "covers": ["xss", "sqli", "idor"]
+    },
+    {
+      "code": "exif_stripping",
+      "label": "EXIF stripping",
+      "covers": ["privacy", "reporter_identity"]
+    },
+    {
+      "code": "audit_log",
+      "label": "Audit log",
+      "covers": ["traceability", "admin_actions"]
+    },
+    {
+      "code": "ley_29733",
+      "label": "Ley 29733",
+      "covers": ["personal_data_pe", "retention", "purpose_limitation"]
+    }
+  ]
+}
+

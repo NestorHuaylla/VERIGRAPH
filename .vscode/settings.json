@@ -1,0 +1,12 @@
+{
+  "python.analysis.extraPaths": [
+    "./apps/api",
+    "./apps/worker"
+  ],
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.testing.pytestArgs": [
+    "apps/api/tests"
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false
+}

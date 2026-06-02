@@ -1,0 +1,758 @@
+CONTEXTO MAESTRO PARA CONTINUAR VERIGRAPH
+Ultima actualizacion: 2026-06-01
+
+Leer este archivo al iniciar una nueva sesion. Aqui esta el estado global del proyecto, la estructura objetivo segun el SVG y los pasos completados/pendientes.
+
+Referencia principal
+- SVG de arquitectura:
+  - `D:\CODEX\fraud_platform_architecture.svg`
+- Checklist persistido:
+  - `docs/ARCHITECTURE_REFERENCE_CHECKLIST.md`
+
+Estructura objetivo segun SVG
+
+CAPA 1 - FRONTEND
+- Buscador publico.
+- Formulario de reporte + evidencia.
+- Panel admin para revision/estados.
+- Vista de grafo con Cytoscape.js.
+
+CAPA 2 - API + AUTENTICACION
+- FastAPI REST.
+- Pydantic.
+- Auth + roles.
+- NextAuth / Keycloak como referencia empresarial.
+- Rate limit Redis por IP.
+
+CAPA 3 - SERVICIOS CORE
+- Motor scoring.
+- Normalizador.
+- Motor grafo Neo4j/Louvain.
+- Apelaciones.
+- Audit log/trazabilidad.
+
+CAPA 4 - WORKERS ASINCRONOS
+- Worker externo.
+- Worker analisis/NLP.
+- Worker alertas.
+- Redis como cola.
+
+CAPA 5 - ALMACENAMIENTO
+- PostgreSQL.
+- Neo4j.
+- MinIO/S3.
+- Redis.
+
+CAPA 6 - FUENTES EXTERNAS
+- VirusTotal.
+- Google Safe Browsing.
+- PhishTank.
+- URLhaus.
+- urlscan.io.
+
+SEGURIDAD TRANSVERSAL
+- Input validation.
+- XSS / SQLi / IDOR.
+- EXIF stripping.
+- Audit log.
+- Ley 29733 Peru.
+
+Estructura real del repo
+
+VERIGRAPH/
+- `apps/api`
+  - Backend FastAPI.
+  - Modelos SQLAlchemy.
+  - Schemas Pydantic.
+  - Servicios core.
+  - Alembic migrations.
+  - Tests backend.
+- `apps/web`
+  - Frontend Next.js.
+  - Rutas app router.
+  - Componentes UI.
+  - Vista `/graph` con Cytoscape.
+- `apps/worker`
+  - Workers Celery.
+  - Tareas external_checks, analysis, alerts.
+  - Servicios de reputacion externa.
+- `packages/shared`
+  - JSON compartidos: fuentes externas, controles, taxonomias.
+- `docs`
+  - Arquitectura, roadmap, seguridad, checklist contra SVG.
+- `infra`
+  - Inicializacion Postgres.
+- `docker-compose.yml`
+  - postgres, redis, neo4j, minio, api, web, workers, keycloak.
+
+Pasos completados
+
+Paso 1-6
+- Base del proyecto ya existente antes de esta etapa.
+- Infra Docker local.
+- API FastAPI.
+- Frontend Next.js.
+- Auth local con roles.
+- Reportes, evidencia, entidades, scoring inicial, admin/casos/auditoria.
+
+Paso 7 - Vista de grafo frontend
+- Implementado Cytoscape.js en:
+  - `apps/web/src/components/graph-client.tsx`
+- Usa:
+  - `GET /api/v1/graph/preview?limit=100`
+- Incluye:
+  - nodos/aristas interactivos.
+  - zoom/pan.
+  - seleccion nodo/arista.
+  - layouts Cose/Circle/Grid.
+  - colores por tipo de entidad.
+  - fallback demo.
+- Verificacion historica:
+  - `corepack pnpm --dir apps\web typecheck` paso.
+
+Paso 8 - Sync PostgreSQL -> Neo4j
+- Servicio:
+  - `apps/api/app/services/neo4j_sync.py`
+- Endpoint:
+  - `POST /api/v1/graph/sync/neo4j?batch_size=500`
+- Sincroniza:
+  - `Entity` -> nodos `:VerigraphEntity`.
+  - `EntityRelation` -> aristas `:VERIGRAPH_RELATION`.
+- Constraints/indices Neo4j:
+  - `VerigraphEntity.id` unico.
+  - indice por type.
+  - indice por normalized_value.
+- Tests:
+  - `apps/api/tests/test_neo4j_sync.py`
+
+Paso 9 - Analitica Neo4j GDS
+- Servicio:
+  - `apps/api/app/services/graph_analytics.py`
+- Extension:
+  - `Neo4jGraphStore.run_read(...)`
+- Endpoints:
+  - `POST /api/v1/graph/analytics/projection?refresh=false`
+  - `GET /api/v1/graph/analytics/pagerank?limit=25&refresh_projection=false`
+  - `GET /api/v1/graph/analytics/degree?limit=25&refresh_projection=false`
+  - `GET /api/v1/graph/analytics/communities?limit=10&refresh_projection=false`
+- Metricas:
+  - PageRank.
+  - Degree centrality.
+  - Louvain/comunidades.
+- Tests:
+  - `apps/api/tests/test_graph_analytics.py`
+
+Paso 10 - Conectar GDS al frontend `/graph`
+- Tipos agregados:
+  - `apps/web/src/lib/verigraph-types.ts`
+- UI actualizada:
+  - `apps/web/src/components/graph-client.tsx`
+- Panel de analitica:
+  - PageRank.
+  - Degree.
+  - Louvain.
+  - refrescar GDS.
+- Cytoscape resalta:
+  - tamano por score.
+  - borde por comunidad.
+- Verificacion:
+  - `corepack pnpm --dir apps\web typecheck` paso.
+  - `corepack pnpm --dir apps\web build` paso.
+- Nota:
+  - build muestra warnings de SWC opcional `@next/swc-win32-x64-msvc`, pero compila.
+  - dev server arranca en foreground con `corepack pnpm --dir apps\web dev`.
+
+Paso 11 - Integraciones externas reales iniciales
+- Servicio worker:
+  - `apps/worker/worker/services/external_sources.py`
+- Fuentes implementadas:
+  - URLhaus.
+  - Google Safe Browsing.
+- Fuentes declaradas pendientes:
+  - VirusTotal.
+  - PhishTank.
+  - urlscan.io.
+- Variables:
+  - `URLHAUS_AUTH_KEY`
+  - `GOOGLE_SAFE_BROWSING_API_KEY`
+- Correccion importante:
+  - `apps/worker/worker/config.py` ahora carga siempre el `.env` raiz:
+    - `D:\CODEX\VERIGRAPH\.env`
+  - Antes, ejecutando desde `apps/worker`, no leia las claves.
+- Prueba real hecha:
+  - `check_external_reputation('test-entity', 'https://example.com', 'url')`
+  - URLhaus respondio `clean`.
+  - Google Safe Browsing respondio `clean`.
+- Tests:
+  - `apps/worker/tests/test_external_sources.py`
+
+Paso 12 - Persistir reputacion externa + scoring
+- Modelo:
+  - `apps/api/app/models/external_reputation.py`
+  - tabla `external_reputation_checks`
+- Migracion:
+  - `apps/api/app/migrations/versions/20260601_0006_add_external_reputation_checks.py`
+- Schemas:
+  - `apps/api/app/schemas/external_reputation.py`
+- Servicio:
+  - `apps/api/app/services/external_reputation.py`
+- Endpoints:
+  - `GET /api/v1/entities/{entity_id}/external-reputation`
+  - `POST /api/v1/entities/{entity_id}/external-reputation`
+- Seguridad:
+  - GET requiere reviewer: admin/analyst/legal.
+  - POST acepta JWT reviewer o `WORKER_API_TOKEN`.
+- Worker:
+  - `apps/worker/worker/services/api_client.py`
+  - `check_url_reputation` y `check_domain_reputation` ahora intentan persistir si hay token.
+- Scoring:
+  - `calculate_initial_score(...)` acepta `external_signals`.
+  - Risk lookup suma senales externas si hay checks persistidos.
+- Senales nuevas:
+  - `external_high_confidence_match`, peso 18.
+  - `external_reputation_match`, peso 10.
+- Variables:
+  - `WORKER_API_TOKEN`
+- Tests:
+  - API: 212 passed.
+  - Worker: 9 passed.
+
+Paso 13 - Alertas reales
+- Configuracion API:
+  - `apps/api/app/core/config.py`
+  - variables nuevas:
+    - `NOTIFICATION_WEBHOOK_URL`
+    - `SLACK_WEBHOOK_URL`
+    - `ALERT_EMAIL_TO`
+    - `ALERT_EMAIL_FROM`
+    - `SMTP_HOST`
+    - `SMTP_PORT`
+    - `SMTP_USERNAME`
+    - `SMTP_PASSWORD`
+    - `SMTP_USE_TLS`
+- Rutas default:
+  - `apps/api/app/services/notification_deliveries.py`
+  - crea entregas segun webhook/Slack/email configurados.
+  - conserva fallback webhook sin destino si no hay configuracion, para mantener outbox visible en dev.
+- Delivery real:
+  - `apps/api/app/services/delivery_worker.py`
+  - webhook generico con HTTP POST.
+  - Slack webhook con payload `text`/`blocks`.
+  - email SMTP con `smtplib`.
+  - reintentos/backoff existentes siguen activos.
+- Worker alertas:
+  - `apps/worker/worker/services/alerts.py`
+  - reemplazo del stub por envio real webhook/Slack/email.
+  - `apps/worker/worker/tasks/alerts.py` reintenta con Celery cuando el fallo es retryable.
+- Trigger nuevo:
+  - `apps/api/app/services/notifications.py`
+  - `create_external_reputation_notification(...)`
+  - dispara notificacion `external_reputation.malicious` cuando una reputacion externa persistida tiene `malicious=true`.
+- Integracion:
+  - `apps/api/app/services/external_reputation.py`
+  - al crear checks externos, calcula summary y crea alerta si hay fuentes maliciosas.
+- `.env.example` actualizado con variables de alertas.
+- Tests focalizados:
+  - `tests/test_delivery_worker.py`
+  - `tests/test_notification_deliveries.py`
+  - `tests/test_notifications.py`
+  - `tests/test_external_reputation.py`
+  - Resultado: 43 passed.
+- Tests completos tras Paso 13:
+  - API: 217 passed.
+  - Worker: 14 passed.
+
+Paso 14 - MinIO/S3 real para evidencia
+- Configuracion:
+  - `apps/api/app/core/config.py`
+  - variable nueva:
+    - `EVIDENCE_STORAGE_BACKEND=local|s3`
+  - `.env.example` actualizado.
+- Adaptador almacenamiento:
+  - `apps/api/app/services/storage.py`
+  - modo `local` conserva escritura actual en `storage/evidence`.
+  - modo `s3` usa `boto3` contra `S3_ENDPOINT`, compatible con MinIO.
+  - crea/verifica bucket `S3_BUCKET_EVIDENCE`.
+  - sube evidencia con `ContentType` y metadata `sha256`, `size_bytes`, `source`.
+  - mantiene `object_key` estable: `reports/{report_id}/evidence/{sha256}.{ext}`.
+  - borra temporales tras subir a S3.
+- Metadata evidencia:
+  - `apps/api/app/services/evidence.py`
+  - guarda `storage_backend=local` + `local_path` para local.
+  - guarda `storage_backend=s3`, `s3_bucket`, `s3_endpoint` para S3.
+- Analisis de texto:
+  - `apps/api/app/services/evidence_analysis.py`
+  - `PlainTextExtractor` ahora puede leer texto desde S3 si la evidencia esta en backend `s3`.
+- Tests focalizados:
+  - `tests/test_storage.py`
+  - `tests/test_evidence.py`
+  - `tests/test_evidence_analysis.py`
+  - Resultado: 26 passed.
+
+Paso 15 - EXIF stripping real
+- Servicio:
+  - `apps/api/app/services/exif.py`
+  - reemplazo del placeholder por stripping binario real sin dependencia externa nueva.
+- Formatos cubiertos:
+  - JPEG: remueve APP1 EXIF/XMP, APP13 Photoshop metadata y comentarios COM.
+  - PNG: remueve chunks `eXIf`, `iTXt`, `tEXt`, `zTXt`.
+  - WebP: remueve chunks `EXIF` y `XMP `, recalculando tamano RIFF.
+- Integracion:
+  - `apps/api/app/services/storage.py`
+  - la evidencia se limpia durante upload, antes de calcular `sha256`, generar `object_key` y guardar/subir.
+  - si una imagen declara content-type soportado pero el archivo esta mal formado, se devuelve error de almacenamiento en vez de guardar bytes inseguros.
+- Metadata evidencia:
+  - `apps/api/app/services/evidence.py`
+  - guarda `metadata.exif.status`, `metadata_removed`, `original_size_bytes`, `stripped_size_bytes`.
+- Compatibilidad:
+  - aplica igual para backend local y S3/MinIO.
+  - para `text/plain` u otros no imagen, el stripping queda en `skipped`.
+- Tests:
+  - `apps/api/tests/test_exif.py`
+  - `apps/api/tests/test_storage.py`
+  - `apps/api/tests/test_evidence.py`
+  - `apps/api/tests/test_evidence_analysis.py`
+  - Resultado focalizado: 31 passed.
+
+Paso 16 - Completar fuentes externas
+- Servicio:
+  - `apps/worker/worker/services/external_sources.py`
+- Fuentes completadas:
+  - VirusTotal.
+  - PhishTank.
+  - urlscan.io.
+- VirusTotal:
+  - usa API v3.
+  - URLs: `GET /api/v3/urls/{url_id}` con URL id base64 URL-safe sin padding.
+  - Dominios: `GET /api/v3/domains/{domain}`.
+  - evalua `last_analysis_stats.malicious` y `suspicious`.
+  - severidad: `critical` si hay 5+ motores maliciosos, `high` si hay maliciosos, `medium` si solo hay suspicious.
+- PhishTank:
+  - usa `checkurl`.
+  - soporta `entity_type=url`.
+  - marca malicioso solo si `in_database`, `verified` y `valid` son verdaderos.
+  - si hay registro no verificado/activo, queda `unknown` con severidad `low`.
+- urlscan.io:
+  - usa Search API pasiva, no dispara submit/scan nuevo.
+  - URLs: busca por `task.url.keyword` o `page.url.keyword`.
+  - Dominios: busca por `task.domain` o `page.domain`.
+  - evalua `verdicts.*.malicious` y score.
+- Contrato:
+  - mantiene salida `SourceResult` normalizada:
+    - `source`, `status`, `malicious`, `severity`, `summary`, `reference`, `raw`.
+  - `check_external_reputation(...)` ahora consulta cinco fuentes reales cuando hay claves:
+    - URLhaus.
+    - Google Safe Browsing.
+    - VirusTotal.
+    - PhishTank.
+    - urlscan.io.
+- Tests:
+  - `apps/worker/tests/test_external_sources.py`
+  - `apps/worker/tests/test_api_client.py`
+  - `apps/worker/tests/test_alerts.py`
+  - Resultado Worker completo: 20 passed.
+
+Paso 17 - Keycloak/NextAuth
+- Frontend:
+  - `apps/web/src/app/api/auth/[...nextauth]/route.ts`
+  - reemplazo de ruta deshabilitada por NextAuth real.
+  - `apps/web/src/lib/auth-options.ts`
+  - Providers:
+    - Credentials: usa `/api/v1/auth/login` del API local y conserva JWT VERIGRAPH.
+    - Keycloak: se habilita si existen `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`.
+  - `apps/web/src/types/next-auth.d.ts`
+  - tipos extendidos para `session.accessToken` y `session.user.role`.
+  - `apps/web/src/lib/api.ts`
+  - `apiFetch(...)` ahora usa primero sesion local y luego sesion NextAuth si existe.
+  - `apps/web/src/components/internal-route-guard.tsx`
+  - guards internos validan sesion local o NextAuth contra `/api/v1/auth/me`.
+  - `apps/web/src/components/login-client.tsx`
+  - mantiene login/register local.
+  - agrega boton "Entrar con Keycloak" cuando `NEXT_PUBLIC_KEYCLOAK_ENABLED=true`.
+- Backend:
+  - `apps/api/app/core/config.py`
+  - variables nuevas:
+    - `KEYCLOAK_ISSUER`
+    - `KEYCLOAK_CLIENT_ID`
+    - `KEYCLOAK_AUTO_PROVISION_USERS`
+  - `apps/api/app/core/security.py`
+  - `decode_access_token(...)` acepta JWT local HS256 y JWT OIDC/Keycloak con JWKS.
+  - extrae roles desde `roles`, `realm_access.roles` y `resource_access[KEYCLOAK_CLIENT_ID].roles`.
+  - mapea roles `admin`, `analyst`, `legal`, `reporter`, incluyendo prefijo `verigraph_`.
+  - `apps/api/app/core/dependencies.py`
+  - tokens Keycloak se resuelven por email.
+  - si `KEYCLOAK_AUTO_PROVISION_USERS=true`, crea usuario local y sincroniza rol.
+  - usuarios inactivos siguen bloqueados por DB local.
+  - `apps/api/app/api/v1/endpoints/entities.py`
+  - writer de reputacion externa tambien acepta JWT OIDC reviewer/admin/legal.
+- `.env.example` actualizado:
+  - `KEYCLOAK_AUTO_PROVISION_USERS=true`
+  - `NEXT_PUBLIC_KEYCLOAK_ENABLED=false`
+- Verificacion:
+  - API focalizado auth/users/entities: 25 passed.
+  - API completo: 228 passed.
+  - Frontend typecheck: paso.
+  - Frontend build: paso, con warnings conocidos de SWC opcional `@next/swc-win32-x64-msvc`.
+
+Paso 18 - Correcciones finales + checklist E2E
+- Limpieza documental:
+  - `docs/ARCHITECTURE.md`
+  - `docs/ARCHITECTURE_ALIGNMENT.md`
+  - `docs/ROADMAP.md`
+  - `README.md`
+  - se corrigieron referencias viejas a stubs, mocks, upload faltante, Keycloak pendiente y servicios placeholder.
+- Checklist E2E:
+  - `docs/E2E_MVP_CHECKLIST.md`
+  - documenta preparacion de `.env`, infraestructura, migraciones, primer admin, flujo funcional y criterio de cierre.
+- Estado real validado:
+  - API tests completos: 228 passed.
+  - Worker tests completos: 20 passed.
+  - Frontend typecheck: paso.
+  - Frontend build: paso.
+  - Architecture check: paso.
+- Nota frontend:
+  - build mantiene warnings conocidos de SWC opcional `@next/swc-win32-x64-msvc`, pero compila correctamente.
+
+Estado porcentual aproximado
+- MVP tecnico base: 90-92%.
+- MVP alineado al SVG completo: 84-88%.
+- Producto mas cerrado: 67-70%.
+
+Pendientes principales segun SVG
+
+Paso 18 - Prueba end-to-end + docs finales
+- Flujo E2E final esperado:
+  1. Crear reporte.
+  2. Crear/usar entidad.
+  3. Subir evidencia.
+  4. Ejecutar reputacion externa.
+  5. Persistir checks.
+  6. Recalcular score con senales externas.
+  7. Crear/actualizar caso.
+  8. Ver grafo.
+  9. Ejecutar sync Neo4j.
+  10. Ejecutar GDS PageRank/Louvain.
+  11. Disparar alerta.
+  12. Ver auditoria.
+
+Estado:
+- Docs finales y checklist E2E creados.
+- Falta ejecutar el E2E real contra servicios Docker con datos vivos y credenciales externas reales.
+
+Comandos utiles
+
+API tests:
+```powershell
+cd D:\CODEX\VERIGRAPH\apps\api
+..\..\.venv\Scripts\python.exe -m pytest tests
+```
+
+Worker tests:
+```powershell
+cd D:\CODEX\VERIGRAPH\apps\worker
+..\..\.venv\Scripts\python.exe -m pytest tests
+```
+
+Frontend typecheck/build:
+```powershell
+cd D:\CODEX\VERIGRAPH
+corepack pnpm --dir apps\web typecheck
+corepack pnpm --dir apps\web build
+```
+
+Frontend dev:
+```powershell
+cd D:\CODEX\VERIGRAPH
+corepack pnpm --dir apps\web dev
+```
+URL:
+```text
+http://localhost:3000/graph
+```
+
+Migraciones API:
+```powershell
+cd D:\CODEX\VERIGRAPH\apps\api
+..\..\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+Probar reputacion externa directa:
+```powershell
+cd D:\CODEX\VERIGRAPH\apps\worker
+..\..\.venv\Scripts\python.exe -c "from worker.services.external_sources import check_external_reputation; import json; print(json.dumps(check_external_reputation('test-entity', 'https://example.com', 'url'), indent=2))"
+```
+
+Levantar worker externo en segundo plano:
+```powershell
+cd D:\CODEX\VERIGRAPH
+docker-compose up -d redis
+docker-compose --profile workers up -d worker-external
+docker-compose ps
+```
+
+Ver logs:
+```powershell
+docker-compose logs -f worker-external
+```
+
+Variables importantes en `.env`
+```env
+GOOGLE_SAFE_BROWSING_API_KEY=...
+VIRUSTOTAL_API_KEY=...
+PHISHTANK_API_KEY=...
+URLSCAN_API_KEY=...
+URLHAUS_AUTH_KEY=...
+WORKER_API_TOKEN=...
+NOTIFICATION_WEBHOOK_URL=...
+SLACK_WEBHOOK_URL=...
+ALERT_EMAIL_TO=...
+SMTP_HOST=...
+EVIDENCE_STORAGE_BACKEND=local
+KEYCLOAK_ISSUER=http://localhost:8080/realms/verigraph
+KEYCLOAK_CLIENT_ID=verigraph-web
+KEYCLOAK_CLIENT_SECRET=...
+KEYCLOAK_AUTO_PROVISION_USERS=true
+NEXT_PUBLIC_KEYCLOAK_ENABLED=false
+```
+
+Notas importantes
+- La carpeta `D:\CODEX\VERIGRAPH` no tiene metadata `.git`; no usar comandos git como fuente de verdad.
+- No borrar cambios ajenos.
+- Usar `CONTINUAR CON.txt` como bitacora central.
+- Siguiente paso recomendado: ejecutar `docs/E2E_MVP_CHECKLIST.md` con Docker levantado y credenciales reales para cerrar MVP operativo.
+
+REPORTE FINAL DE EJECUCION LOCAL - 2026-06-02
+
+Motivo
+- El usuario queria ver todo el desarrollo corriendo en navegador.
+- El enlace esperado era:
+  - `http://127.0.0.1:3000`
+- Al inicio salia error tipo:
+  - `failed to load page`
+  - no cargaba `localhost:3000` / `127.0.0.1:3000`.
+
+Diagnostico realizado
+- Se reviso estado de Docker con:
+  - `docker-compose ps`
+- Resultado observado:
+  - solo estaban levantados servicios de infraestructura:
+    - `verigraph-postgres-1`
+    - `verigraph-redis-1`
+    - `verigraph-neo4j-1`
+    - `verigraph-minio-1`
+  - no estaban levantados:
+    - `web`
+    - `api`
+    - `worker-external`
+    - `worker-analysis`
+    - `worker-alerts`
+    - `keycloak`
+- Se revisaron puertos con `netstat`.
+- Puertos vivos por Docker:
+  - PostgreSQL: `5432`
+  - Redis: `6379`
+  - Neo4j Browser: `7474`
+  - Neo4j Bolt: `7687`
+  - MinIO API: `9000`
+  - MinIO console: `9001`
+- Puertos que faltaban al inicio:
+  - Web: `3000`
+  - API: `8000`
+
+Problema Docker detectado
+- En esta maquina `docker compose` no funciona como plugin moderno.
+- El comando valido es:
+  - `docker-compose`
+- Ademas, Docker Desktop reporto error interno de WSL al intentar inspeccionar/levantar servicios:
+  - `Docker Desktop is unable to start`
+  - `exit status 139`
+  - errores relacionados a `docker-desktop`, `wsl-bootstrap` y `backend.sock`.
+- Tambien aparecio:
+  - `WARNING: Error loading config file: open C:\Users\PC\.docker\config.json: Acceso denegado.`
+  - `permission denied while trying to connect to the docker API at npipe:////./pipe/docker_engine`
+- Conclusion:
+  - Docker Desktop/WSL tiene un problema interno de permisos/arranque.
+  - La infraestructura publicada por Docker aparecia con puertos abiertos, pero no era confiable para levantar todo con build Docker.
+  - Construir imagenes `web/api/workers` se quedaba trabado demasiado tiempo.
+
+Solucion aplicada para que el usuario pueda ver el desarrollo
+- Se evito reconstruir imagenes Docker.
+- Se uso Docker solo como infraestructura ya levantada:
+  - Postgres.
+  - Redis.
+  - Neo4j.
+  - MinIO.
+- Se levanto la API y la web como procesos locales de Windows.
+- Esto es mas rapido y estable para desarrollo local que esperar builds Docker largos.
+
+Construccion frontend realizada
+- Se ejecuto:
+```powershell
+cd D:\CODEX\VERIGRAPH
+corepack pnpm --dir apps\web build
+```
+- Resultado:
+  - build correcto.
+  - rutas generadas:
+    - `/`
+    - `/login`
+    - `/admin`
+    - `/dashboard`
+    - `/graph`
+    - `/report`
+    - `/users`
+    - `/api/auth/[...nextauth]`
+  - warning conocido:
+    - `@next/swc-win32-x64-msvc` opcional no instalado.
+  - Este warning no bloquea; la app compila.
+
+API levantada localmente
+- La API se levanto con Uvicorn en:
+  - `http://0.0.0.0:8000`
+- Variables usadas para apuntar a infraestructura local:
+```powershell
+$env:DATABASE_URL="postgresql+asyncpg://verigraph:verigraph@127.0.0.1:5432/verigraph"
+$env:REDIS_URL="redis://127.0.0.1:6379/0"
+$env:NEO4J_URI="bolt://127.0.0.1:7687"
+$env:S3_ENDPOINT="http://127.0.0.1:9000"
+```
+- Comando equivalente:
+```powershell
+cd D:\CODEX\VERIGRAPH\apps\api
+..\..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+- Proceso verificado:
+  - Python escuchando en puerto `8000`.
+  - `http://127.0.0.1:8000/docs` respondio `200 OK`.
+
+Web levantada localmente
+- La web se levanto en modo production start usando el build generado.
+- Variable usada:
+```powershell
+$env:NEXT_PUBLIC_API_URL="http://127.0.0.1:8000"
+```
+- Comando equivalente:
+```powershell
+cd D:\CODEX\VERIGRAPH
+corepack pnpm --dir apps\web start --hostname 0.0.0.0
+```
+- Proceso verificado:
+  - Node escuchando en puerto `3000`.
+  - `http://127.0.0.1:3000` respondio `200 OK`.
+  - `http://127.0.0.1:3000/login` respondio `200 OK`.
+  - `http://127.0.0.1:3000/graph` respondio `200 OK`.
+
+Enlaces funcionales confirmados
+- Web principal:
+  - `http://127.0.0.1:3000`
+- Login:
+  - `http://127.0.0.1:3000/login`
+- Grafo:
+  - `http://127.0.0.1:3000/graph`
+- API docs:
+  - `http://127.0.0.1:8000/docs`
+- MinIO console si Docker sigue arriba:
+  - `http://127.0.0.1:9001`
+- Neo4j Browser si Docker sigue arriba:
+  - `http://127.0.0.1:7474`
+
+Logs de ejecucion local
+- Se dejaron logs en:
+  - `D:\CODEX\VERIGRAPH\.runtime-logs`
+- Archivos relevantes:
+  - `api-live.out.log`
+  - `api-live.err.log`
+  - `web-live.out.log`
+  - `web-live.err.log`
+  - logs previos de intentos:
+    - `api-prod.*`
+    - `web-prod.*`
+    - `web2.*`
+
+Comandos para activar otra vez la URL despues de reiniciar o cerrar procesos
+
+1. Levantar infraestructura Docker:
+```powershell
+cd D:\CODEX\VERIGRAPH
+docker-compose up -d postgres redis neo4j minio
+```
+
+2. Si cambiaste frontend, construir:
+```powershell
+cd D:\CODEX\VERIGRAPH
+corepack pnpm --dir apps\web build
+```
+
+3. Levantar API en una terminal:
+```powershell
+cd D:\CODEX\VERIGRAPH\apps\api
+$env:DATABASE_URL="postgresql+asyncpg://verigraph:verigraph@127.0.0.1:5432/verigraph"
+$env:REDIS_URL="redis://127.0.0.1:6379/0"
+$env:NEO4J_URI="bolt://127.0.0.1:7687"
+$env:S3_ENDPOINT="http://127.0.0.1:9000"
+..\..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+4. Levantar Web en otra terminal:
+```powershell
+cd D:\CODEX\VERIGRAPH
+$env:NEXT_PUBLIC_API_URL="http://127.0.0.1:8000"
+corepack pnpm --dir apps\web start --hostname 0.0.0.0
+```
+
+5. Abrir:
+```text
+http://127.0.0.1:3000
+```
+
+Comando alternativo para frontend en modo desarrollo
+- Si no quieres hacer build/start y prefieres desarrollo:
+```powershell
+cd D:\CODEX\VERIGRAPH
+$env:NEXT_PUBLIC_API_URL="http://127.0.0.1:8000"
+corepack pnpm --dir apps\web dev
+```
+- URL:
+  - `http://127.0.0.1:3000`
+
+Como detener procesos levantados localmente
+- Buscar procesos:
+```powershell
+Get-Process -Name node,python | Select-Object ProcessName,Id,Path
+```
+- Detener por PID, ejemplo:
+```powershell
+Stop-Process -Id <PID_NODE>,<PID_PYTHON>
+```
+- En la sesion donde se verifico, se mencionaron procesos de ejemplo:
+  - Node web: `9600`
+  - Python API: `11160`
+- Importante:
+  - esos PID pueden cambiar en cada ejecucion.
+  - siempre revisar con `Get-Process` antes de detener.
+
+Estado funcional actual confirmado en la sesion
+- `http://127.0.0.1:3000` -> `200 OK`
+- `http://127.0.0.1:3000/login` -> `200 OK`
+- `http://127.0.0.1:3000/graph` -> `200 OK`
+- `http://127.0.0.1:8000/docs` -> `200 OK`
+
+Advertencia importante
+- La URL `http://127.0.0.1:3000` es local.
+- Solo funciona mientras:
+  - la PC este encendida.
+  - la web este corriendo en puerto `3000`.
+  - la API este corriendo en puerto `8000`.
+  - para flujos reales con DB/Redis/Neo4j/MinIO, Docker tenga infraestructura arriba.
+- Si se reinicia la PC, cerrar terminales o detener procesos, hay que volver a ejecutar los comandos anteriores.
+
+Estado recomendado para siguiente sesion
+- No intentar build Docker completo si Docker Desktop sigue con `exit status 139`.
+- Para ver/desarrollar:
+  - usar Docker solo para `postgres redis neo4j minio`.
+  - levantar API y web localmente con los comandos de arriba.
+- Si se quiere arreglar Docker de fondo:
+  - reiniciar Docker Desktop.
+  - reiniciar WSL con `wsl --shutdown`.
+  - abrir Docker Desktop como administrador.
+  - si persiste `exit status 139`, reparar/reinstalar Docker Desktop o resetear la distro `docker-desktop` con cuidado.

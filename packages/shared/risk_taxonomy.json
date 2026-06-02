@@ -1,0 +1,28 @@
+{
+  "risk_levels": [
+    { "code": "low", "label": "Bajo", "min": 0, "max": 10 },
+    { "code": "medium", "label": "Medio", "min": 11, "max": 20 },
+    { "code": "high", "label": "Alto", "min": 21, "max": 35 },
+    { "code": "critical", "label": "Critico", "min": 36, "max": null }
+  ],
+  "review_statuses": [
+    "pending",
+    "suspect",
+    "confirmed",
+    "false_positive",
+    "appeal",
+    "archived"
+  ],
+  "entity_types": [
+    "url",
+    "domain",
+    "phone",
+    "email",
+    "wallet",
+    "social_profile",
+    "social_channel",
+    "bank_account",
+    "other"
+  ]
+}
+

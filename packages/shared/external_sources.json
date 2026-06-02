@@ -1,0 +1,34 @@
+{
+  "sources": [
+    {
+      "code": "virustotal",
+      "label": "VirusTotal",
+      "enabled_by_env": "VIRUSTOTAL_API_KEY",
+      "queue": "external_checks"
+    },
+    {
+      "code": "safe_browsing",
+      "label": "Google Safe Browsing",
+      "enabled_by_env": "GOOGLE_SAFE_BROWSING_API_KEY",
+      "queue": "external_checks"
+    },
+    {
+      "code": "phishtank",
+      "label": "PhishTank",
+      "enabled_by_env": "PHISHTANK_API_KEY",
+      "queue": "external_checks"
+    },
+    {
+      "code": "urlhaus",
+      "label": "URLhaus",
+      "enabled_by_env": "URLHAUS_AUTH_KEY",
+      "queue": "external_checks"
+    },
+    {
+      "code": "urlscan",
+      "label": "urlscan.io",
+      "enabled_by_env": "URLSCAN_API_KEY",
+      "queue": "external_checks"
+    }
+  ]
+}

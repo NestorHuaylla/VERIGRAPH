@@ -1,0 +1,18 @@
+{
+  "name": "verigraph",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "dev:web-only": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -SkipDocker",
+    "dev:build": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -ForceBuild",
+    "dev:workers": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -WithWorkers",
+    "dev:auth": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -WithAuth",
+    "dev:web": "pnpm --dir apps/web dev",
+    "build:web": "pnpm --dir apps/web build",
+    "typecheck:web": "pnpm --dir apps/web typecheck",
+    "docker:infra": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -InfraOnly",
+    "docker:auth": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Auth",
+    "docker:app": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Full"
+  }
+}

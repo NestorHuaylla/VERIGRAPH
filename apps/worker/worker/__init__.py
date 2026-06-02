@@ -1,0 +1,2 @@
+"""VERIGRAPH Celery workers."""
+

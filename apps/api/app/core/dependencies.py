@@ -1,0 +1,97 @@
+from collections.abc import Callable
+from uuid import UUID
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.constants import UserRole
+from app.core.security import decode_access_token, extract_email_from_token_payload, select_token_role
+from app.db.session import get_db
+from app.models.user import User
+from app.services.users import find_or_create_external_user, find_user_by_email, find_user_by_id
+
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    credentials_error = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired authentication token.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    payload = decode_access_token(token)
+    if payload is None:
+        raise credentials_error
+
+    subject = payload.get("sub")
+    if not subject:
+        raise credentials_error
+
+    if payload.get("auth_provider") == "keycloak":
+        return await get_current_oidc_user(db, payload, credentials_error)
+
+    try:
+        user_id = UUID(str(subject))
+    except ValueError as exc:
+        raise credentials_error from exc
+
+    user = await find_user_by_id(db, user_id)
+    if user is None:
+        raise credentials_error
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user.")
+
+    return user
+
+
+async def get_current_oidc_user(
+    db: AsyncSession,
+    payload: dict,
+    credentials_error: HTTPException,
+) -> User:
+    email = extract_email_from_token_payload(payload)
+    if not email:
+        raise credentials_error
+
+    token_role = select_token_role(payload)
+    user = None
+    if settings.keycloak_auto_provision_users:
+        user = await find_or_create_external_user(
+            db,
+            email=email,
+            role=token_role or UserRole.REPORTER,
+        )
+    else:
+        user = await find_user_by_email(db, email)
+        if user is not None and token_role is not None and user.role != token_role.value:
+            user.role = token_role.value
+            await db.commit()
+            await db.refresh(user)
+
+    if user is None:
+        raise credentials_error
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user.")
+    return user
+
+
+def require_roles(*allowed_roles: UserRole) -> Callable[..., User]:
+    allowed = {role.value for role in allowed_roles}
+
+    async def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+        return current_user
+
+    return dependency
+
+
+require_report_reviewer = require_roles(UserRole.ADMIN, UserRole.ANALYST, UserRole.LEGAL)
+require_reporter_or_reviewer = require_roles(UserRole.REPORTER, UserRole.ANALYST, UserRole.ADMIN, UserRole.LEGAL)
+require_admin = require_roles(UserRole.ADMIN)

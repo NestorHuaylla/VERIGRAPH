@@ -1,0 +1,137 @@
+name: verigraph
+
+services:
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - neo4j
+      - minio
+    profiles:
+      - app
+
+  worker-external:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A worker.celery_app worker -Q external_checks -n external@%h --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+    profiles:
+      - workers
+
+  worker-analysis:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A worker.celery_app worker -Q analysis -n analysis@%h --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+      - neo4j
+    profiles:
+      - workers
+
+  worker-alerts:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A worker.celery_app worker -Q alerts -n alerts@%h --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    profiles:
+      - workers
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    restart: unless-stopped
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    profiles:
+      - auth
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: verigraph
+      POSTGRES_USER: verigraph
+      POSTGRES_PASSWORD: verigraph
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  neo4j:
+    image: neo4j:5-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/verigraph-local
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: gds.*
+      NEO4J_dbms_security_procedures_allowlist: gds.*
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: verigraph
+      MINIO_ROOT_PASSWORD: verigraph-local
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  postgres-data:
+  redis-data:
+  neo4j-data:
+  neo4j-logs:
+  minio-data:
