@@ -23,19 +23,44 @@ git clone https://github.com/NestorHuaylla/VERIGRAPH.git
 cd VERIGRAPH
 cp .env.production.example .env.production
 nano .env.production
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
 ## Ver estado y logs
 
 ```bash
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f api
-docker compose -f docker-compose.prod.yml logs -f web
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f api
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f web
+```
+
+## Carga masiva de reportes
+
+El CSV debe tener cabeceras. Formato recomendado:
+
+```csv
+entity_type,entity_value,reason,reporter_contact
+domain,ejemplo.com,Promesa de inversion garantizada vista en redes,contacto@correo.com
+phone,+51999999999,Numero usado en reportes de cobro sospechoso,
+```
+
+Tambien se aceptan cabeceras en espanol: `tipo`, `valor`, `motivo`, `contacto`.
+
+Sube el archivo al servidor dentro de `imports/`:
+
+```bash
+mkdir -p imports
+```
+
+Luego importa desde el contenedor API:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml exec api python -m app.scripts.import_reports_csv /imports/reportes.csv --dry-run
+docker compose --env-file .env.production -f docker-compose.prod.yml exec api python -m app.scripts.import_reports_csv /imports/reportes.csv
 ```
 
 ## Apagar
 
 ```bash
-docker compose -f docker-compose.prod.yml down
+docker compose --env-file .env.production -f docker-compose.prod.yml down
 ```

@@ -22,7 +22,6 @@ async def list_cases(
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_report_reviewer),
 ) -> list[CaseListItem]:
     return await list_cases_service(db, limit=limit, offset=offset)
 
@@ -31,7 +30,6 @@ async def list_cases(
 async def get_case_detail(
     case_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_report_reviewer),
 ) -> CaseDetailResponse:
     try:
         return await get_case_detail_service(db, case_id)

@@ -31,7 +31,6 @@ router = APIRouter()
 async def graph_preview(
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_report_reviewer),
 ) -> GraphResponse:
     return await build_graph_preview(db, limit=limit)
 
@@ -41,7 +40,6 @@ async def graph_for_entity(
     entity_id: UUID,
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_report_reviewer),
 ) -> GraphResponse:
     return await build_entity_graph(db, entity_id=entity_id, limit=limit)
 
@@ -50,7 +48,6 @@ async def graph_for_entity(
 async def graph_metrics_for_entity(
     entity_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_report_reviewer),
 ) -> GraphMetrics:
     return await calculate_entity_graph_metrics(db, entity_id=entity_id)
 

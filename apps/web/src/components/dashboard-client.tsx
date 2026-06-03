@@ -24,6 +24,13 @@ type LoadState = {
   demo: boolean;
 };
 
+class DashboardAuthError extends Error {
+  constructor() {
+    super("Los indicadores operativos completos requieren una cuenta interna.");
+    this.name = "DashboardAuthError";
+  }
+}
+
 const deliveryStatuses: Array<NotificationDeliveryStatus | "all"> = ["all", "pending", "sent", "failed"];
 const deliveryChannels: Array<NotificationDeliveryChannel | "all"> = ["all", "webhook", "email", "slack"];
 
@@ -34,6 +41,9 @@ async function fetchDashboardData(): Promise<DashboardData> {
   ]);
 
   if (!metricsResponse.ok || !deliveriesResponse.ok) {
+    if (metricsResponse.status === 401 || deliveriesResponse.status === 401) {
+      throw new DashboardAuthError();
+    }
     throw new Error(`API error ${metricsResponse.status}/${deliveriesResponse.status}`);
   }
 
@@ -85,7 +95,12 @@ export function DashboardClient() {
         setData(demoDashboardData);
         setLoadState({
           loading: false,
-          error: error instanceof Error ? error.message : "No se pudo cargar el panel.",
+          error:
+            error instanceof DashboardAuthError
+              ? "Vista publica de muestra. Inicia sesion como admin/analista para ver indicadores reales."
+              : error instanceof Error
+                ? error.message
+                : "No se pudo cargar el panel.",
           demo: true
         });
       }
@@ -175,7 +190,12 @@ export function DashboardClient() {
                 setData(demoDashboardData);
                 setLoadState({
                   loading: false,
-                  error: error instanceof Error ? error.message : "No se pudo cargar el panel.",
+                  error:
+                    error instanceof DashboardAuthError
+                      ? "Vista publica de muestra. Inicia sesion como admin/analista para ver indicadores reales."
+                      : error instanceof Error
+                        ? error.message
+                        : "No se pudo cargar el panel.",
                   demo: true
                 });
               });
@@ -189,7 +209,7 @@ export function DashboardClient() {
       {loadState.error ? (
         <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
           <AlertTriangle className="mt-0.5 shrink-0" size={18} />
-          <p>{loadState.demo ? "Vista local de desarrollo activa. " : ""}{loadState.error}</p>
+          <p>{loadState.error}</p>
         </div>
       ) : null}
 
