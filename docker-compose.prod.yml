@@ -1,0 +1,127 @@
+name: verigraph-prod
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.prod
+    env_file:
+      - .env.production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile.prod
+    env_file:
+      - .env.production
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - neo4j
+      - minio
+    volumes:
+      - api-evidence:/app/storage/evidence
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - .env.production
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-verigraph}
+      POSTGRES_USER: ${POSTGRES_USER:-verigraph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-change-me}
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: gds.*
+      NEO4J_dbms_security_procedures_allowlist: gds.*
+      NEO4J_server_memory_heap_initial__size: 768m
+      NEO4J_server_memory_heap_max__size: 1536m
+      NEO4J_server_memory_pagecache_size: 512m
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    env_file:
+      - .env.production
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-verigraph}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  worker-external:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    command: celery -A worker.celery_app worker -Q external_checks -n external@%h --loglevel=info
+    env_file:
+      - .env.production
+    depends_on:
+      - redis
+      - postgres
+      - api
+    profiles:
+      - workers
+    restart: unless-stopped
+
+  worker-analysis:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    command: celery -A worker.celery_app worker -Q analysis -n analysis@%h --loglevel=info
+    env_file:
+      - .env.production
+    depends_on:
+      - redis
+      - postgres
+      - neo4j
+      - api
+    profiles:
+      - workers
+    restart: unless-stopped
+
+volumes:
+  api-evidence:
+  postgres-data:
+  redis-data:
+  neo4j-data:
+  neo4j-logs:
+  minio-data:

@@ -4,11 +4,11 @@ import { Archive, BarChart3, FileSearch, GitFork, ShieldCheck, ClipboardList, Lo
 const nav = [
   { href: "/", label: "Buscador", icon: FileSearch },
   { href: "/report", label: "Reporte", icon: ClipboardList },
-  { href: "/admin", label: "Admin", icon: ShieldCheck },
   { href: "/cases", label: "Casos", icon: Archive },
-  { href: "/users", label: "Usuarios", icon: UserCog },
   { href: "/graph", label: "Grafo", icon: GitFork },
   { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
+  { href: "/admin", label: "Admin", icon: ShieldCheck },
+  { href: "/users", label: "Usuarios", icon: UserCog },
   { href: "/login", label: "Login", icon: LockKeyhole }
 ] as const;
 

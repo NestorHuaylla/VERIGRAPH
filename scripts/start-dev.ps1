@@ -33,6 +33,24 @@ function Invoke-DockerCompose {
   throw "No se encontro Docker Compose. Instala Docker Desktop o agrega Docker Compose al PATH."
 }
 
+function Test-DockerDaemon {
+  if (Get-Command docker-compose -ErrorAction SilentlyContinue) {
+    & docker-compose ps 1>$null
+    if ($LASTEXITCODE -eq 0) {
+      return
+    }
+  } elseif (Get-Command docker -ErrorAction SilentlyContinue) {
+    & docker info 1>$null
+    if ($LASTEXITCODE -eq 0) {
+      return
+    }
+  } else {
+    throw "No se encontro Docker. Instala Docker Desktop antes de arrancar backend/base de datos."
+  }
+
+  throw "Docker no esta corriendo. Abre Docker Desktop, espera a que diga 'Docker is running', y vuelve a ejecutar este archivo."
+}
+
 function Import-DotEnv {
   param([string]$Path)
 
@@ -71,6 +89,7 @@ Import-DotEnv -Path ".env"
 if (-not $SkipDocker) {
   Write-Host ""
   Write-Host "Levantando Docker: Postgres, Redis, Neo4j, MinIO y API..."
+  Test-DockerDaemon
 
   $ComposeArgs = @("--profile", "app")
   $Services = @("postgres", "redis", "neo4j", "minio", "api")

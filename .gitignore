@@ -1,4 +1,7 @@
 .env
+.env.local
+.env.production
+.env.*.local
 .venv/
 __pycache__/
 *.pyc
@@ -11,9 +14,9 @@ dist/
 build/
 coverage/
 *.log
+*.tsbuildinfo
 uploads/
 minio-data/
 postgres-data/
 neo4j-data/
 redis-data/
-
