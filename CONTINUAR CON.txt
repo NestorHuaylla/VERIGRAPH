@@ -1,5 +1,5 @@
 CONTEXTO MAESTRO PARA CONTINUAR VERIGRAPH
-Ultima actualizacion: 2026-06-01
+Ultima actualizacion: 2026-06-04
 
 Leer este archivo al iniciar una nueva sesion. Aqui esta el estado global del proyecto, la estructura objetivo segun el SVG y los pasos completados/pendientes.
 
@@ -756,3 +756,68 @@ Estado recomendado para siguiente sesion
   - reiniciar WSL con `wsl --shutdown`.
   - abrir Docker Desktop como administrador.
   - si persiste `exit status 139`, reparar/reinstalar Docker Desktop o resetear la distro `docker-desktop` con cuidado.
+
+Incidente produccion 2026-06-04 - registro/login fallaba
+
+Sintomas observados en servidor
+- El registro/login devolvia `500 Internal Server Error`.
+- En logs del API aparecio primero:
+  - `asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "verigraph"`.
+- Tambien aparecian warnings al ejecutar Compose sin env file:
+  - `The "POSTGRES_PASSWORD" variable is not set. Defaulting to a blank string.`
+  - `The "POSTGRES_USER" variable is not set. Defaulting to a blank string.`
+- Luego se reviso un traceback con:
+  - `UndefinedTableError: relation "users" does not exist`.
+  - Se valido la lista de tablas y finalmente `users` si existia; ese punto fue un error de lectura/copiado en terminal.
+
+Causa real
+- Docker Compose se estaba ejecutando sin `--env-file .env.production`, por eso las variables usadas en interpolacion de `docker-compose.prod.yml` salian vacias en los warnings.
+- Ademas, el volumen de PostgreSQL ya estaba inicializado con una password interna distinta a la indicada en `.env.production`.
+- Cambiar `POSTGRES_PASSWORD` en `.env.production` no cambia automaticamente la password real de un usuario ya creado dentro del volumen de Postgres.
+- El API usa `DATABASE_URL=postgresql+asyncpg://verigraph:poni4545@postgres:5432/verigraph`; si la password real del usuario `verigraph` no coincide, falla cualquier consulta, incluido registro/login.
+
+Solucion aplicada
+- Ejecutar Docker Compose siempre con env file:
+```bash
+sudo docker compose --env-file .env.production -f docker-compose.prod.yml ps
+sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+```
+- Sincronizar la password real del usuario de Postgres con la de `.env.production`:
+```sql
+ALTER USER verigraph WITH PASSWORD 'poni4545';
+```
+- Reiniciar el API:
+```bash
+sudo docker compose --env-file .env.production -f docker-compose.prod.yml restart api
+```
+
+Validaciones que confirmaron la reparacion
+- Conexion a Postgres:
+```bash
+sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec postgres psql -U verigraph -d verigraph -c "SELECT current_user;"
+```
+- Resultado esperado:
+```text
+ current_user
+--------------
+ verigraph
+```
+- Tablas existentes:
+```bash
+sudo docker compose --env-file .env.production -f docker-compose.prod.yml exec postgres psql -U verigraph -d verigraph -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;"
+```
+- Deben aparecer, entre otras:
+  - `users`
+  - `reports`
+  - `risk_rules`
+  - `risk_scores`
+- Prueba de API:
+```bash
+curl -i http://127.0.0.1:8000/api/v1/health
+curl -i -X POST "http://127.0.0.1:8000/api/v1/auth/login" -H "Content-Type: application/json" --data-raw '{"email":"huallbenit@gmail.com","password":"poni4545"}'
+```
+
+Nota importante
+- El problema no fue normalizacion del correo ni CORS.
+- El problema principal fue inconsistencia entre `.env.production`, Compose y la password real guardada en el volumen de PostgreSQL.
+- En produccion se recomienda cambiar `poni4545` por secretos largos y distintos para `POSTGRES_PASSWORD`, `DATABASE_URL`, `JWT_SECRET`, `NEXTAUTH_SECRET`, `WORKER_API_TOKEN`, `NEO4J_PASSWORD`, `MINIO_ROOT_PASSWORD` y `S3_SECRET_KEY`.

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import ReviewStatus
-from app.core.dependencies import require_report_reviewer, require_reporter_or_reviewer
+from app.core.dependencies import require_report_reviewer, require_reporter_or_reviewer, require_worker_or_report_reviewer
 from app.core.rate_limit import enforce_rate_limit
 from app.db.session import get_db
 from app.models.user import User
@@ -157,7 +157,7 @@ async def analyze_report_evidence(
     evidence_id: UUID,
     prefer_ai: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_report_reviewer),
+    _: User | None = Depends(require_worker_or_report_reviewer),
 ) -> EvidenceResponse:
     try:
         evidence = await process_report_evidence_analysis(

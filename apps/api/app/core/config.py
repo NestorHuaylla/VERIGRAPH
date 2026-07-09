@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     max_evidence_upload_mb: int = 20
     local_evidence_storage_path: str = "storage/evidence"
 
+    # IPs/redes de proxies confiables (nginx, load balancer, etc.) autorizadas
+    # a enviar X-Forwarded-For / X-Real-IP. Si la conexion TCP no viene de una
+    # de estas redes, esos headers se ignoran y se usa la IP directa del
+    # socket, para evitar que un cliente falsifique su propia IP.
+    trusted_proxy_networks: list[str] = Field(
+        default_factory=lambda: ["127.0.0.1/32", "::1/128"]
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

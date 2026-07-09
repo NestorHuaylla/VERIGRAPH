@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { AlertTriangle, Building2, Loader2, LockKeyhole, LogOut, UserPlus } from "lucide-react";
 import { signIn, signOut } from "next-auth/react";
 
-import { ApiError, apiPost, clearAuthSession, getEffectiveAuthSession, setAuthSession } from "@/lib/api";
+import { ApiError, apiPost, clearAuthSession, fetchCurrentUser, setAuthSession } from "@/lib/api";
 import type { AuthResponse } from "@/lib/verigraph-types";
 import { StatusPill } from "@/components/status-pill";
 
@@ -20,7 +20,7 @@ export function LoginClient() {
   const keycloakEnabled = Boolean(process.env.NEXT_PUBLIC_KEYCLOAK_ENABLED === "true");
 
   useEffect(() => {
-    void getEffectiveAuthSession().then((session) => setUser(session?.user ?? null));
+    void fetchCurrentUser().then((sessionUser) => setUser(sessionUser));
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -45,7 +45,7 @@ export function LoginClient() {
   }
 
   function handleLogout() {
-    clearAuthSession();
+    void clearAuthSession();
     void signOut({ redirect: false });
     setUser(null);
   }

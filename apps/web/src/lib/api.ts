@@ -3,10 +3,17 @@ import { getSession } from "next-auth/react";
 
 const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 const defaultApiPort = process.env.NEXT_PUBLIC_API_PORT?.trim() || "8000";
-const authStorageKey = "verigraph.auth";
+
+// NOTA DE SEGURIDAD: el login local (/api/v1/auth/login) sigue devolviendo
+// `access_token` en el body de la respuesta para que clientes de API no
+// interactivos (scripts, Postman, apps moviles) puedan seguir usandolo.
+// El frontend web, sin embargo, NUNCA debe leer ni persistir ese valor:
+// el backend ya deja el token en una cookie httpOnly (inaccesible desde
+// JavaScript), y esta app se apoya en esa cookie via `credentials: "include"`.
+// Guardar el token en localStorage/variables de JS es lo que queremos evitar,
+// porque cualquier XSS en la pagina podria robarlo.
 
 export type AuthSession = {
-  access_token: string;
   token_type: string;
   user: {
     id: string;
@@ -58,54 +65,44 @@ export function getApiBaseUrl(): string {
 
 export const apiBaseUrl = getApiBaseUrl();
 
-export function getAuthSession(): AuthSession | null {
+// Sesion local: ya NO se guarda el JWT, solo el perfil de usuario (para
+// pintar la UI sin tener que llamar a /auth/me en cada render). La cookie
+// httpOnly del backend es la unica que realmente autentica las peticiones.
+const userStorageKey = "verigraph.user";
+
+export function getAuthUser(): AuthSession["user"] | null {
   if (!isBrowser()) {
     return null;
   }
 
-  const rawSession = window.localStorage.getItem(authStorageKey);
-  if (!rawSession) {
+  const raw = window.localStorage.getItem(userStorageKey);
+  if (!raw) {
     return null;
   }
 
   try {
-    return JSON.parse(rawSession) as AuthSession;
+    return JSON.parse(raw) as AuthSession["user"];
   } catch {
-    window.localStorage.removeItem(authStorageKey);
+    window.localStorage.removeItem(userStorageKey);
     return null;
   }
 }
 
 export function setAuthSession(session: AuthSession): void {
-  window.localStorage.setItem(authStorageKey, JSON.stringify(session));
-}
-
-export function clearAuthSession(): void {
   if (isBrowser()) {
-    window.localStorage.removeItem(authStorageKey);
+    window.localStorage.setItem(userStorageKey, JSON.stringify(session.user));
   }
 }
 
-export function getAuthUser(): AuthSession["user"] | null {
-  return getAuthSession()?.user ?? null;
-}
-
-export async function getEffectiveAuthSession(): Promise<AuthSession | null> {
-  const localSession = getAuthSession();
-  if (localSession?.access_token) {
-    return localSession;
+export async function clearAuthSession(): Promise<void> {
+  if (isBrowser()) {
+    window.localStorage.removeItem(userStorageKey);
   }
-
-  const nextAuthSession = await getSession();
-  if (!nextAuthSession?.accessToken) {
-    return null;
-  }
-
-  return {
-    access_token: nextAuthSession.accessToken,
-    token_type: "bearer",
-    user: nextAuthSession.user
-  };
+  // Le pide al backend que borre la cookie httpOnly de sesion.
+  await fetch(`${getApiBaseUrl()}/api/v1/auth/logout`, {
+    method: "POST",
+    credentials: "include"
+  }).catch(() => undefined);
 }
 
 async function parseErrorResponse(response: Response): Promise<string> {
@@ -131,14 +128,20 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
 
-  const session = await getEffectiveAuthSession();
-  if (session?.access_token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${session.access_token}`);
+  // La cookie httpOnly de sesion local viaja sola gracias a credentials:"include".
+  // Para el flujo Keycloak/NextAuth (que no usa la cookie del backend), seguimos
+  // adjuntando el accessToken de la sesion de NextAuth via header Authorization.
+  if (!headers.has("Authorization")) {
+    const nextAuthSession = await getSession();
+    if (nextAuthSession?.accessToken) {
+      headers.set("Authorization", `Bearer ${nextAuthSession.accessToken}`);
+    }
   }
 
   return fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
     headers,
+    credentials: "include",
     cache: init.cache ?? "no-store"
   });
 }
@@ -159,6 +162,18 @@ export async function apiJson<T>(path: string, init: RequestInit = {}): Promise<
 
 export async function apiGet<T>(path: string): Promise<T> {
   return apiJson<T>(path);
+}
+
+// Reemplaza al viejo getEffectiveAuthSession(): en vez de leer el token
+// desde JS, le pregunta directamente al backend "quien soy" (la cookie
+// httpOnly, o el header de NextAuth, viajan solos). Devuelve null si no
+// hay sesion valida, sin exponer ningun token.
+export async function fetchCurrentUser(): Promise<AuthSession["user"] | null> {
+  try {
+    return await apiGet<AuthSession["user"]>("/api/v1/auth/me");
+  } catch {
+    return null;
+  }
 }
 
 export async function apiPost<T>(path: string, payload: unknown): Promise<T> {

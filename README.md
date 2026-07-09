@@ -139,3 +139,87 @@ corepack pnpm --dir apps/web dev
 3. En el celular abre `http://IP-DE-TU-PC:3000`.
 
 Cuando la web se abre desde un celular, el frontend cambia automaticamente las llamadas del API desde `localhost:8000` hacia `IP-DE-TU-PC:8000`. El API permite origenes de red local como `10.x.x.x`, `172.16-31.x.x` y `192.168.x.x`.
+
+## Produccion en servidor Linux
+
+1. Crear el archivo de entorno:
+
+```bash
+cp .env.production.example .env.production
+```
+
+2. Editar `.env.production` con la IP/dominio real y secretos reales. Como minimo, cambiar:
+
+```env
+PUBLIC_WEB_URL=http://TU_IP_O_DOMINIO:3000
+PUBLIC_API_URL=http://TU_IP_O_DOMINIO:8000
+NEXT_PUBLIC_API_URL=http://TU_IP_O_DOMINIO:8000
+NEXTAUTH_URL=http://TU_IP_O_DOMINIO:3000
+CORS_ORIGINS=["http://TU_IP_O_DOMINIO:3000"]
+POSTGRES_PASSWORD=...
+DATABASE_URL=postgresql+asyncpg://verigraph:...@postgres:5432/verigraph
+JWT_SECRET=...
+NEXTAUTH_SECRET=...
+WORKER_API_TOKEN=...
+NEO4J_PASSWORD=...
+MINIO_ROOT_PASSWORD=...
+S3_SECRET_KEY=...
+```
+
+3. Levantar siempre con `--env-file .env.production`. Si no se usa `--env-file`, Compose puede mostrar warnings de variables vacias aunque los contenedores tengan `env_file`.
+
+```bash
+sudo docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+```
+
+Tambien se puede usar el helper:
+
+```bash
+chmod +x scripts/prod.sh
+sudo ./scripts/prod.sh up
+sudo ./scripts/prod.sh ps
+```
+
+4. Validar base de datos, migraciones y API:
+
+```bash
+sudo ./scripts/prod.sh validate-db
+sudo ./scripts/prod.sh validate-api
+```
+
+Debe aparecer `current_user = verigraph` y la lista de tablas debe incluir `users`, `reports`, `risk_rules` y `risk_scores`.
+
+5. Probar login desde terminal:
+
+```bash
+sudo ./scripts/prod.sh login usuario@dominio.com "password"
+```
+
+Si sale `200 OK`, auth funciona. Si sale `401 Unauthorized`, el API y la DB estan bien pero el usuario/password no coinciden. Si sale `500`, revisar:
+
+```bash
+sudo ./scripts/prod.sh logs-api 120
+```
+
+### Reparar password real de PostgreSQL
+
+Si los logs muestran:
+
+```text
+password authentication failed for user "verigraph"
+```
+
+significa que `DATABASE_URL` y la password real del usuario `verigraph` dentro del volumen de Postgres no coinciden. Esto pasa cuando el volumen ya existia: cambiar `.env.production` no cambia automaticamente la password interna.
+
+Para sincronizar la password real con `POSTGRES_PASSWORD` de `.env.production`:
+
+```bash
+sudo ./scripts/prod.sh sync-postgres-password
+```
+
+Luego validar:
+
+```bash
+sudo ./scripts/prod.sh validate-db
+sudo ./scripts/prod.sh restart api
+```

@@ -75,7 +75,6 @@ ORDER BY size DESC
 LIMIT $limit
 """
 
-
 @dataclass(frozen=True)
 class GraphProjection:
     graph_name: str

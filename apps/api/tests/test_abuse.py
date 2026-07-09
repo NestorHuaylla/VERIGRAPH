@@ -75,6 +75,17 @@ def test_get_client_ip_uses_x_real_ip_before_socket_client() -> None:
     assert get_client_ip(request) == "203.0.113.20"  # type: ignore[arg-type]
 
 
+def test_get_client_ip_ignores_forwarded_headers_from_untrusted_socket() -> None:
+    # Un cliente que no llega a traves de un proxy confiable no debe poder
+    # falsificar su IP mandando X-Forwarded-For / X-Real-IP el mismo.
+    request = FakeRequest(
+        headers={"x-forwarded-for": "203.0.113.10", "x-real-ip": "203.0.113.20"},
+        client_host="198.51.100.5",
+    )
+
+    assert get_client_ip(request) == "198.51.100.5"  # type: ignore[arg-type]
+
+
 def test_build_public_report_request_metadata_includes_ip_user_agent_and_source() -> None:
     request = FakeRequest(
         headers={

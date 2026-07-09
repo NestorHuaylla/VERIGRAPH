@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import get_db
 from app.models.user import User
@@ -18,18 +19,32 @@ from app.services.auth import (
 router = APIRouter()
 
 
+def _set_auth_cookie(response: Response, access_token: str) -> None:
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=access_token,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite=settings.auth_cookie_samesite,
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+    )
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def register(payload: RegisterRequest, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     try:
         user = await register_user(db, payload)
     except DuplicateUserError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.") from exc
 
-    return build_token_response(user)
+    token_response = build_token_response(user)
+    _set_auth_cookie(response, token_response.access_token)
+    return token_response
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+async def login(payload: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     try:
         user = await authenticate_user(db, str(payload.email), payload.password)
     except InvalidCredentialsError as exc:
@@ -37,7 +52,14 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> To
     except InactiveUserError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user.") from exc
 
-    return build_token_response(user)
+    token_response = build_token_response(user)
+    _set_auth_cookie(response, token_response.access_token)
+    return token_response
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(response: Response) -> None:
+    response.delete_cookie(key=settings.auth_cookie_name, path="/")
 
 
 @router.get("/me", response_model=UserResponse)

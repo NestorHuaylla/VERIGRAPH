@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Loader2, LogIn, ShieldAlert } from "lucide-react";
 
-import { ApiError, apiGet, getEffectiveAuthSession, type AuthSession } from "@/lib/api";
+import { ApiError, apiGet, type AuthSession } from "@/lib/api";
 import type { UserRole } from "@/lib/verigraph-types";
 import { StatusPill } from "@/components/status-pill";
 
@@ -38,21 +38,7 @@ export function InternalRouteGuard({
 
     setState("checking");
 
-    void getEffectiveAuthSession()
-      .then((session) => {
-        if (!alive) {
-          return;
-        }
-        const sessionUser = session?.user ?? null;
-        setUser(sessionUser);
-
-        if (!session?.access_token || !sessionUser) {
-          setState("anonymous");
-          return null;
-        }
-
-        return apiGet<GuardUser>("/api/v1/auth/me");
-      })
+    void apiGet<GuardUser>("/api/v1/auth/me")
       .then((validatedUser) => {
         if (!alive || !validatedUser) {
           return;

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,10 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    return await get_user_from_token(db, token)
+
+
+async def get_user_from_token(db: AsyncSession, token: str) -> User:
     credentials_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired authentication token.",
@@ -81,6 +85,15 @@ async def get_current_oidc_user(
     return user
 
 
+def extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
+
+
 def require_roles(*allowed_roles: UserRole) -> Callable[..., User]:
     allowed = {role.value for role in allowed_roles}
 
@@ -92,6 +105,32 @@ def require_roles(*allowed_roles: UserRole) -> Callable[..., User]:
     return dependency
 
 
+def require_worker_token_or_roles(*allowed_roles: UserRole) -> Callable[..., User | None]:
+    allowed = {role.value for role in allowed_roles}
+
+    async def dependency(
+        authorization: str | None = Header(default=None),
+        db: AsyncSession = Depends(get_db),
+    ) -> User | None:
+        token = extract_bearer_token(authorization)
+        if settings.worker_api_token and token == settings.worker_api_token:
+            return None
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired authentication token.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        user = await get_user_from_token(db, token)
+        if user.role not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+        return user
+
+    return dependency
+
+
 require_report_reviewer = require_roles(UserRole.ADMIN, UserRole.ANALYST, UserRole.LEGAL)
 require_reporter_or_reviewer = require_roles(UserRole.REPORTER, UserRole.ANALYST, UserRole.ADMIN, UserRole.LEGAL)
+require_worker_or_report_reviewer = require_worker_token_or_roles(UserRole.ADMIN, UserRole.ANALYST, UserRole.LEGAL)
 require_admin = require_roles(UserRole.ADMIN)

@@ -1,0 +1,381 @@
+
+diff --git a/apps/api/app/api/v1/endpoints/auth.py b/apps/api/app/api/v1/endpoints/auth.py
+index 0bcbc9b..a4dee6a 100644
+--- a/apps/api/app/api/v1/endpoints/auth.py
++++ b/apps/api/app/api/v1/endpoints/auth.py
+@@ -1,6 +1,7 @@
+-from fastapi import APIRouter, Depends, HTTPException, status
++from fastapi import APIRouter, Depends, HTTPException, Response, status
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
++from app.core.config import settings
+ from app.core.dependencies import get_current_user
+ from app.db.session import get_db
+ from app.models.user import User
+@@ -18,18 +19,32 @@ from app.services.auth import (
+ router = APIRouter()
+ 
+ 
++def _set_auth_cookie(response: Response, access_token: str) -> None:
++    response.set_cookie(
++        key=settings.auth_cookie_name,
++        value=access_token,
++        httponly=True,
++        secure=settings.auth_cookie_secure,
++        samesite=settings.auth_cookie_samesite,
++        max_age=settings.access_token_expire_minutes * 60,
++        path="/",
++    )
++
++
+ @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+-async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
++async def register(payload: RegisterRequest, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+     try:
+         user = await register_user(db, payload)
+     except DuplicateUserError as exc:
+         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.") from exc
+ 
+-    return build_token_response(user)
++    token_response = build_token_response(user)
++    _set_auth_cookie(response, token_response.access_token)
++    return token_response
+ 
+ 
+ @router.post("/login", response_model=TokenResponse)
+-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
++async def login(payload: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+     try:
+         user = await authenticate_user(db, str(payload.email), payload.password)
+     except InvalidCredentialsError as exc:
+@@ -37,7 +52,14 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> To
+     except InactiveUserError as exc:
+         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user.") from exc
+ 
+-    return build_token_response(user)
++    token_response = build_token_response(user)
++    _set_auth_cookie(response, token_response.access_token)
++    return token_response
++
++
++@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
++async def logout(response: Response) -> None:
++    response.delete_cookie(key=settings.auth_cookie_name, path="/")
+ 
+ 
+ @router.get("/me", response_model=UserResponse)
+diff --git a/apps/api/app/core/dependencies.py b/apps/api/app/core/dependencies.py
+index 87338d7..c656b9b 100644
+--- a/apps/api/app/core/dependencies.py
++++ b/apps/api/app/core/dependencies.py
+@@ -1,7 +1,7 @@
+ from collections.abc import Callable
+ from uuid import UUID
+ 
+-from fastapi import Depends, HTTPException, status
++from fastapi import Depends, HTTPException, Request, status
+ from fastapi.security import OAuth2PasswordBearer
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+@@ -13,11 +13,22 @@ from app.models.user import User
+ from app.services.users import find_or_create_external_user, find_user_by_email, find_user_by_id
+ 
+ 
+-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
++# auto_error=False: si no viene header Authorization, no lanzamos 401 de
++# inmediato; primero probamos la cookie httpOnly de sesion (ver get_token_from_request).
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
++
++
++def get_token_from_request(
++    request: Request,
++    header_token: str | None = Depends(oauth2_scheme),
++) -> str | None:
++    if header_token:
++        return header_token
++    return request.cookies.get(settings.auth_cookie_name)
+ 
+ 
+ async def get_current_user(
+-    token: str = Depends(oauth2_scheme),
++    token: str | None = Depends(get_token_from_request),
+     db: AsyncSession = Depends(get_db),
+ ) -> User:
+     credentials_error = HTTPException(
+@@ -25,6 +36,9 @@ async def get_current_user(
+         detail="Invalid or expired authentication token.",
+         headers={"WWW-Authenticate": "Bearer"},
+     )
++    if not token:
++        raise credentials_error
++
+     payload = decode_access_token(token)
+     if payload is None:
+         raise credentials_error
+diff --git a/apps/api/tests/test_dependencies_auth_cookie.py b/apps/api/tests/test_dependencies_auth_cookie.py
+new file mode 100644
+index 0000000..fe0357c
+--- /dev/null
++++ b/apps/api/tests/test_dependencies_auth_cookie.py
+@@ -0,0 +1,31 @@
++from app.core.config import settings
++from app.core.dependencies import get_token_from_request
++
++
++class FakeRequest:
++    def __init__(self, cookies: dict[str, str] | None = None) -> None:
++        self.cookies = cookies or {}
++
++
++def test_get_token_from_request_prefers_authorization_header() -> None:
++    request = FakeRequest(cookies={settings.auth_cookie_name: "cookie-token"})
++
++    token = get_token_from_request(request, header_token="header-token")  # type: ignore[arg-type]
++
++    assert token == "header-token"
++
++
++def test_get_token_from_request_falls_back_to_cookie() -> None:
++    request = FakeRequest(cookies={settings.auth_cookie_name: "cookie-token"})
++
++    token = get_token_from_request(request, header_token=None)  # type: ignore[arg-type]
++
++    assert token == "cookie-token"
++
++
++def test_get_token_from_request_returns_none_without_header_or_cookie() -> None:
++    request = FakeRequest(cookies={})
++
++    token = get_token_from_request(request, header_token=None)  # type: ignore[arg-type]
++
++    assert token is None
+diff --git a/apps/web/src/components/internal-route-guard.tsx b/apps/web/src/components/internal-route-guard.tsx
+index acd0855..e273582 100644
+--- a/apps/web/src/components/internal-route-guard.tsx
++++ b/apps/web/src/components/internal-route-guard.tsx
+@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
+ import { useEffect, useState } from "react";
+ import { Loader2, LogIn, ShieldAlert } from "lucide-react";
+ 
+-import { ApiError, apiGet, getEffectiveAuthSession, type AuthSession } from "@/lib/api";
++import { ApiError, apiGet, type AuthSession } from "@/lib/api";
+ import type { UserRole } from "@/lib/verigraph-types";
+ import { StatusPill } from "@/components/status-pill";
+ 
+@@ -38,21 +38,7 @@ export function InternalRouteGuard({
+ 
+     setState("checking");
+ 
+-    void getEffectiveAuthSession()
+-      .then((session) => {
+-        if (!alive) {
+-          return;
+-        }
+-        const sessionUser = session?.user ?? null;
+-        setUser(sessionUser);
+-
+-        if (!session?.access_token || !sessionUser) {
+-          setState("anonymous");
+-          return null;
+-        }
+-
+-        return apiGet<GuardUser>("/api/v1/auth/me");
+-      })
++    void apiGet<GuardUser>("/api/v1/auth/me")
+       .then((validatedUser) => {
+         if (!alive || !validatedUser) {
+           return;
+diff --git a/apps/web/src/components/login-client.tsx b/apps/web/src/components/login-client.tsx
+index 61a5642..c6d35a2 100644
+--- a/apps/web/src/components/login-client.tsx
++++ b/apps/web/src/components/login-client.tsx
+@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
+ import { AlertTriangle, Building2, Loader2, LockKeyhole, LogOut, UserPlus } from "lucide-react";
+ import { signIn, signOut } from "next-auth/react";
+ 
+-import { ApiError, apiPost, clearAuthSession, getEffectiveAuthSession, setAuthSession } from "@/lib/api";
++import { ApiError, apiPost, clearAuthSession, fetchCurrentUser, setAuthSession } from "@/lib/api";
+ import type { AuthResponse } from "@/lib/verigraph-types";
+ import { StatusPill } from "@/components/status-pill";
+ 
+@@ -20,7 +20,7 @@ export function LoginClient() {
+   const keycloakEnabled = Boolean(process.env.NEXT_PUBLIC_KEYCLOAK_ENABLED === "true");
+ 
+   useEffect(() => {
+-    void getEffectiveAuthSession().then((session) => setUser(session?.user ?? null));
++    void fetchCurrentUser().then((sessionUser) => setUser(sessionUser));
+   }, []);
+ 
+   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+@@ -45,7 +45,7 @@ export function LoginClient() {
+   }
+ 
+   function handleLogout() {
+-    clearAuthSession();
++    void clearAuthSession();
+     void signOut({ redirect: false });
+     setUser(null);
+   }
+diff --git a/apps/web/src/components/report-client.tsx b/apps/web/src/components/report-client.tsx
+index bd8d8b6..38afc9b 100644
+--- a/apps/web/src/components/report-client.tsx
++++ b/apps/web/src/components/report-client.tsx
+@@ -3,7 +3,7 @@
+ import { ChangeEvent, FormEvent, useRef, useState } from "react";
+ import { AlertTriangle, CheckCircle2, Loader2, UploadCloud } from "lucide-react";
+ 
+-import { ApiError, apiFetch, apiPost, getAuthSession, getApiBaseUrl } from "@/lib/api";
++import { ApiError, apiFetch, apiPost, fetchCurrentUser, getApiBaseUrl } from "@/lib/api";
+ import type { EntityType, EvidenceResponse, ReportResponse } from "@/lib/verigraph-types";
+ import { StatusPill } from "@/components/status-pill";
+ 
+@@ -97,7 +97,7 @@ export function ReportClient() {
+       let evidenceWarning: string | null = null;
+ 
+       if (selectedFile) {
+-        if (getAuthSession()) {
++        if (await fetchCurrentUser()) {
+           try {
+             evidence = await uploadEvidence(report.id, selectedFile);
+           } catch (caughtError) {
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index ae53ab3..945f53a 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -3,10 +3,17 @@ import { getSession } from "next-auth/react";
+ 
+ const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+ const defaultApiPort = process.env.NEXT_PUBLIC_API_PORT?.trim() || "8000";
+-const authStorageKey = "verigraph.auth";
++
++// NOTA DE SEGURIDAD: el login local (/api/v1/auth/login) sigue devolviendo
++// `access_token` en el body de la respuesta para que clientes de API no
++// interactivos (scripts, Postman, apps moviles) puedan seguir usandolo.
++// El frontend web, sin embargo, NUNCA debe leer ni persistir ese valor:
++// el backend ya deja el token en una cookie httpOnly (inaccesible desde
++// JavaScript), y esta app se apoya en esa cookie via `credentials: "include"`.
++// Guardar el token en localStorage/variables de JS es lo que queremos evitar,
++// porque cualquier XSS en la pagina podria robarlo.
+ 
+ export type AuthSession = {
+-  access_token: string;
+   token_type: string;
+   user: {
+     id: string;
+@@ -58,54 +65,44 @@ export function getApiBaseUrl(): string {
+ 
+ export const apiBaseUrl = getApiBaseUrl();
+ 
+-export function getAuthSession(): AuthSession | null {
++// Sesion local: ya NO se guarda el JWT, solo el perfil de usuario (para
++// pintar la UI sin tener que llamar a /auth/me en cada render). La cookie
++// httpOnly del backend es la unica que realmente autentica las peticiones.
++const userStorageKey = "verigraph.user";
++
++export function getAuthUser(): AuthSession["user"] | null {
+   if (!isBrowser()) {
+     return null;
+   }
+ 
+-  const rawSession = window.localStorage.getItem(authStorageKey);
+-  if (!rawSession) {
++  const raw = window.localStorage.getItem(userStorageKey);
++  if (!raw) {
+     return null;
+   }
+ 
+   try {
+-    return JSON.parse(rawSession) as AuthSession;
++    return JSON.parse(raw) as AuthSession["user"];
+   } catch {
+-    window.localStorage.removeItem(authStorageKey);
++    window.localStorage.removeItem(userStorageKey);
+     return null;
+   }
+ }
+ 
+ export function setAuthSession(session: AuthSession): void {
+-  window.localStorage.setItem(authStorageKey, JSON.stringify(session));
+-}
+-
+-export function clearAuthSession(): void {
+   if (isBrowser()) {
+-    window.localStorage.removeItem(authStorageKey);
++    window.localStorage.setItem(userStorageKey, JSON.stringify(session.user));
+   }
+ }
+ 
+-export function getAuthUser(): AuthSession["user"] | null {
+-  return getAuthSession()?.user ?? null;
+-}
+-
+-export async function getEffectiveAuthSession(): Promise<AuthSession | null> {
+-  const localSession = getAuthSession();
+-  if (localSession?.access_token) {
+-    return localSession;
+-  }
+-
+-  const nextAuthSession = await getSession();
+-  if (!nextAuthSession?.accessToken) {
+-    return null;
++export async function clearAuthSession(): Promise<void> {
++  if (isBrowser()) {
++    window.localStorage.removeItem(userStorageKey);
+   }
+-
+-  return {
+-    access_token: nextAuthSession.accessToken,
+-    token_type: "bearer",
+-    user: nextAuthSession.user
+-  };
++  // Le pide al backend que borre la cookie httpOnly de sesion.
++  await fetch(`${getApiBaseUrl()}/api/v1/auth/logout`, {
++    method: "POST",
++    credentials: "include"
++  }).catch(() => undefined);
+ }
+ 
+ async function parseErrorResponse(response: Response): Promise<string> {
+@@ -131,14 +128,20 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
+   const headers = new Headers(init.headers);
+   headers.set("Accept", "application/json");
+ 
+-  const session = await getEffectiveAuthSession();
+-  if (session?.access_token && !headers.has("Authorization")) {
+-    headers.set("Authorization", `Bearer ${session.access_token}`);
++  // La cookie httpOnly de sesion local viaja sola gracias a credentials:"include".
++  // Para el flujo Keycloak/NextAuth (que no usa la cookie del backend), seguimos
++  // adjuntando el accessToken de la sesion de NextAuth via header Authorization.
++  if (!headers.has("Authorization")) {
++    const nextAuthSession = await getSession();
++    if (nextAuthSession?.accessToken) {
++      headers.set("Authorization", `Bearer ${nextAuthSession.accessToken}`);
++    }
+   }
+ 
+   return fetch(`${getApiBaseUrl()}${path}`, {
+     ...init,
+     headers,
++    credentials: "include",
+     cache: init.cache ?? "no-store"
+   });
+ }
+@@ -161,6 +164,18 @@ export async function apiGet<T>(path: string): Promise<T> {
+   return apiJson<T>(path);
+ }
+ 
++// Reemplaza al viejo getEffectiveAuthSession(): en vez de leer el token
++// desde JS, le pregunta directamente al backend "quien soy" (la cookie
++// httpOnly, o el header de NextAuth, viajan solos). Devuelve null si no
++// hay sesion valida, sin exponer ningun token.
++export async function fetchCurrentUser(): Promise<AuthSession["user"] | null> {
++  try {
++    return await apiGet<AuthSession["user"]>("/api/v1/auth/me");
++  } catch {
++    return null;
++  }
++}
++
+ export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
+   return apiJson<T>(path, {
+     method: "POST",

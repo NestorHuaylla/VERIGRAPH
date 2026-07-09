@@ -3,9 +3,12 @@ from __future__ import annotations
 import re
 import string
 from dataclasses import dataclass
+from functools import lru_cache
+from ipaddress import ip_address, ip_network
 
 from fastapi import Request
 
+from app.core.config import settings
 from app.schemas.report import ReportCreate
 
 
@@ -91,18 +94,40 @@ def has_too_many_symbols(text: str) -> bool:
     return symbol_count / len(meaningful_chars) > MAX_SYMBOL_RATIO
 
 
+@lru_cache(maxsize=1)
+def _trusted_proxy_networks() -> tuple:
+    return tuple(ip_network(network, strict=False) for network in settings.trusted_proxy_networks)
+
+
+def _is_trusted_proxy(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        parsed = ip_address(host)
+    except ValueError:
+        return False
+    return any(parsed in network for network in _trusted_proxy_networks())
+
+
 def get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        first_ip = forwarded_for.split(",", maxsplit=1)[0].strip()
-        if first_ip:
-            return first_ip
+    direct_ip = request.client.host if request.client else None
 
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
+    # Solo confiamos en X-Forwarded-For / X-Real-IP si la conexion TCP directa
+    # viene de un proxy conocido (nginx, load balancer, etc). De lo contrario
+    # el propio cliente podria mandar estos headers y falsificar su IP para
+    # evadir el rate limit o el registro anti-abuso.
+    if _is_trusted_proxy(direct_ip):
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            first_ip = forwarded_for.split(",", maxsplit=1)[0].strip()
+            if first_ip:
+                return first_ip
 
-    return request.client.host if request.client else "unknown"
+        real_ip = request.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
+
+    return direct_ip or "unknown"
 
 
 def get_user_agent(request: Request) -> str | None:

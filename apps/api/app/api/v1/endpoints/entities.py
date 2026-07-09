@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.constants import EntityType, UserRole
-from app.core.dependencies import require_report_reviewer
+from app.core.dependencies import extract_bearer_token, require_report_reviewer
 from app.core.security import decode_access_token, extract_email_from_token_payload, select_token_role
 from app.db.session import get_db
 from app.models.user import User
@@ -84,15 +84,6 @@ async def require_external_reputation_writer(
     if user.role not in {UserRole.ADMIN.value, UserRole.ANALYST.value, UserRole.LEGAL.value}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
     return user
-
-
-def extract_bearer_token(authorization: str | None) -> str | None:
-    if not authorization:
-        return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        return None
-    return token
 
 
 @router.get("/risk", response_model=PublicRiskResponse)

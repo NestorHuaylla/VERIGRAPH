@@ -26,6 +26,59 @@ nano .env.production
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
+Tambien puedes usar el helper del repo, que siempre agrega `--env-file .env.production`:
+
+```bash
+chmod +x scripts/prod.sh
+./scripts/prod.sh up
+./scripts/prod.sh ps
+```
+
+Verifica especialmente estas variables antes de construir la web:
+
+```env
+NEXT_PUBLIC_API_URL=http://TU_IP_O_DOMINIO:8000
+NEXT_PUBLIC_API_PORT=8000
+NEXTAUTH_URL=http://TU_IP_O_DOMINIO:3000
+CORS_ORIGINS=["http://TU_IP_O_DOMINIO:3000"]
+DATABASE_URL=postgresql+asyncpg://verigraph:TU_PASSWORD@postgres:5432/verigraph
+```
+
+`NEXT_PUBLIC_API_URL` se inyecta durante el build de Next.js. Si cambias dominio, IP o puerto del API, vuelve a ejecutar:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build web
+```
+
+El contenedor API espera a PostgreSQL saludable y ejecuta `alembic upgrade head` antes de arrancar, para que `/api/v1/auth/register` tenga las tablas listas.
+
+## Validar registro/login desde terminal
+
+```bash
+./scripts/prod.sh validate-db
+./scripts/prod.sh validate-api
+./scripts/prod.sh login usuario@dominio.com "password"
+```
+
+Si `validate-db` muestra `current_user = verigraph`, la conexion a PostgreSQL esta funcionando. Si el login devuelve `401`, la base y el API estan bien pero las credenciales del usuario no coinciden. Si devuelve `500`, revisa logs del API.
+
+## Reparar password real de PostgreSQL
+
+Si los logs del API muestran:
+
+```text
+password authentication failed for user "verigraph"
+```
+
+la password real guardada dentro del volumen de PostgreSQL no coincide con `POSTGRES_PASSWORD` / `DATABASE_URL` de `.env.production`. Esto puede pasar cuando el volumen ya existia, porque cambiar `.env.production` no actualiza automaticamente usuarios ya creados en Postgres.
+
+Para sincronizarla:
+
+```bash
+./scripts/prod.sh sync-postgres-password
+./scripts/prod.sh validate-db
+```
+
 ## Ver estado y logs
 
 ```bash

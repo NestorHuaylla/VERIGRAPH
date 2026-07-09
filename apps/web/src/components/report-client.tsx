@@ -3,7 +3,7 @@
 import { ChangeEvent, FormEvent, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, UploadCloud } from "lucide-react";
 
-import { ApiError, apiFetch, apiPost, getAuthSession, getApiBaseUrl } from "@/lib/api";
+import { ApiError, apiFetch, apiPost, fetchCurrentUser, getApiBaseUrl } from "@/lib/api";
 import type { EntityType, EvidenceResponse, ReportResponse } from "@/lib/verigraph-types";
 import { StatusPill } from "@/components/status-pill";
 
@@ -97,7 +97,7 @@ export function ReportClient() {
       let evidenceWarning: string | null = null;
 
       if (selectedFile) {
-        if (getAuthSession()) {
+        if (await fetchCurrentUser()) {
           try {
             evidence = await uploadEvidence(report.id, selectedFile);
           } catch (caughtError) {
