@@ -1,0 +1,66 @@
+diff --git a/apps/api/app/core/config.py b/apps/api/app/core/config.py
+index 9a0849f..dfa3ebd 100644
+--- a/apps/api/app/core/config.py
++++ b/apps/api/app/core/config.py
+@@ -66,6 +66,15 @@ class Settings(BaseSettings):
+         default_factory=lambda: ["127.0.0.1/32", "::1/128"]
+     )
+ 
++    # Cookie httpOnly usada para sesiones de navegador (login local). El
++    # token tambien se devuelve en el body de /auth/login para clientes de
++    # API no interactivos (scripts, Postman, apps moviles), pero el frontend
++    # web NO debe leerlo ni guardarlo: debe apoyarse en esta cookie, que
++    # JavaScript no puede leer, para mitigar robo de sesion via XSS.
++    auth_cookie_name: str = "verigraph_access_token"
++    auth_cookie_secure: bool = False  # poner en True detras de HTTPS (prod)
++    auth_cookie_samesite: str = "lax"
++
+ 
+ @lru_cache
+ def get_settings() -> Settings:
+diff --git a/apps/api/app/core/dependencies.py b/apps/api/app/core/dependencies.py
+index 95ec1fc..1d7bed9 100644
+--- a/apps/api/app/core/dependencies.py
++++ b/apps/api/app/core/dependencies.py
+@@ -1,7 +1,7 @@
+ from collections.abc import Callable
+ from uuid import UUID
+ 
+-from fastapi import Depends, Header, HTTPException, status
++from fastapi import Depends, Header, HTTPException, Request, status
+ from fastapi.security import OAuth2PasswordBearer
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
+@@ -13,13 +13,30 @@ from app.models.user import User
+ from app.services.users import find_or_create_external_user, find_user_by_email, find_user_by_id
+ 
+ 
+-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
++# auto_error=False: si no viene header Authorization, no lanzamos 401 de
++# inmediato; primero probamos la cookie httpOnly de sesion (ver get_token_from_request).
++oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
++
++
++def get_token_from_request(
++    request: Request,
++    header_token: str | None = Depends(oauth2_scheme),
++) -> str | None:
++    if header_token:
++        return header_token
++    return request.cookies.get(settings.auth_cookie_name)
+ 
+ 
+ async def get_current_user(
+-    token: str = Depends(oauth2_scheme),
++    token: str | None = Depends(get_token_from_request),
+     db: AsyncSession = Depends(get_db),
+ ) -> User:
++    if not token:
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Invalid or expired authentication token.",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
+     return await get_user_from_token(db, token)
+ 
+ 

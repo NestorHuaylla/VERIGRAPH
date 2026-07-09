@@ -66,6 +66,15 @@ class Settings(BaseSettings):
         default_factory=lambda: ["127.0.0.1/32", "::1/128"]
     )
 
+    # Cookie httpOnly usada para sesiones de navegador (login local). El
+    # token tambien se devuelve en el body de /auth/login para clientes de
+    # API no interactivos (scripts, Postman, apps moviles), pero el frontend
+    # web NO debe leerlo ni guardarlo: debe apoyarse en esta cookie, que
+    # JavaScript no puede leer, para mitigar robo de sesion via XSS.
+    auth_cookie_name: str = "verigraph_access_token"
+    auth_cookie_secure: bool = False  # poner en True detras de HTTPS (prod)
+    auth_cookie_samesite: str = "lax"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,13 +13,30 @@ from app.models.user import User
 from app.services.users import find_or_create_external_user, find_user_by_email, find_user_by_id
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+# auto_error=False: si no viene header Authorization, no lanzamos 401 de
+# inmediato; primero probamos la cookie httpOnly de sesion (ver get_token_from_request).
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+
+def get_token_from_request(
+    request: Request,
+    header_token: str | None = Depends(oauth2_scheme),
+) -> str | None:
+    if header_token:
+        return header_token
+    return request.cookies.get(settings.auth_cookie_name)
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    token: str | None = Depends(get_token_from_request),
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return await get_user_from_token(db, token)
 
 
