@@ -23,7 +23,7 @@
 - [x] Deteccion de patrones de texto plano y extraccion de indicadores.
 - [x] Comunidades, PageRank y Degree en Neo4j GDS.
 - [x] Alertas internas y salientes por webhook/Slack/email.
-- [ ] Exportacion PDF/CSV.
+- [x] Exportacion PDF/CSV.
 
 ## Fase 4 - Producto escalable
 

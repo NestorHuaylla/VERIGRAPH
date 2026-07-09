@@ -838,3 +838,20 @@ Se revisaron y corrigieron 6 hallazgos de la auditoria de codigo. Estado: 1 y 2 
 Todos verificados con pytest (238 tests pasando) antes de generar el patch. Pendiente: aplicar el patch fix-03-06-security-hardening.patch y confirmar en main.
 
 Proximos candidatos a revisar (no urgentes): CI/CD (GitHub Actions), observabilidad/logs, exportacion PDF/CSV, migrar el simulador de grafo a 3d-force-graph para manejar mas nodos en 3D.
+
+---
+
+## Exportacion PDF/CSV + CI basico (Claude) - Julio 2026
+
+- [x] Exportacion CSV de la lista de reportes: `GET /api/v1/reports/export/csv` (roles admin/analyst/legal).
+- [x] Exportacion PDF de un reporte individual: `GET /api/v1/reports/{report_id}/export/pdf`.
+- [x] Boton "Exportar CSV" en el header del panel admin y boton "PDF" en el detalle de cada reporte (`admin-client.tsx`), usando un helper `downloadApiFile` en `lib/api.ts` que respeta tanto la cookie httpOnly local como el Bearer de NextAuth/Keycloak.
+- [x] Nueva dependencia: `reportlab` (generacion de PDF) en `apps/api/requirements.txt`.
+- [x] Tests nuevos: `apps/api/tests/test_export_service.py` (6 casos, CSV y PDF, con y sin score de riesgo).
+- [x] Se elimino `fix-03-06-security-hardening.patch` de la raiz: ya estaba aplicado en `main` (commit `7752a08`), solo quedaba como archivo obsoleto.
+- [x] CI basico agregado en `.github/workflows/ci.yml`: corre pytest de API y worker, y typecheck + build del frontend en cada push/PR a `main`.
+
+Verificado localmente antes del push: 244 tests de API pasando (238 + 6 nuevos), 20 tests de worker pasando, typecheck y build de Next.js sin errores.
+
+Pendientes que quedan abiertos (siguientes candidatos): OCR/AI Vision real (hoy son stubs que devuelven `status="queued"` sin procesar nada), una fuente de reputacion externa declarada pero no implementada (`not_implemented_source` en `external_sources.py`), observabilidad (Sentry/logs estructurados/metricas), deploy cloud, API privada para empresas y extension de navegador.
+

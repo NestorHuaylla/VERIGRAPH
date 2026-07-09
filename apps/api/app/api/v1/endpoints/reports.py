@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import ReviewStatus
@@ -28,6 +28,12 @@ from app.services.evidence import create_report_evidence_from_upload as create_r
 from app.services.evidence import build_evidence_response
 from app.services.evidence import list_report_evidence as list_report_evidence_service
 from app.services.evidence_analysis import EvidenceAnalysisError, process_report_evidence_analysis
+from app.services.export import (
+    build_report_detail_pdf,
+    build_reports_csv,
+    report_pdf_filename,
+    reports_csv_filename,
+)
 from app.services.reports import ReportNotFoundError
 from app.services.reports import create_report as create_report_service
 from app.services.reports import find_report_by_id
@@ -49,6 +55,23 @@ async def list_reports(
     return await list_reports_service(db, limit=limit, offset=offset)
 
 
+@router.get("/export/csv")
+async def export_reports_csv(
+    limit: int = Query(default=1000, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_report_reviewer),
+) -> Response:
+    reports = await list_reports_service(db, limit=limit, offset=offset)
+    csv_content = build_reports_csv(reports)
+    filename = reports_csv_filename()
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{report_id}", response_model=ReportDetailResponse)
 async def get_report_detail(
     report_id: UUID,
@@ -59,6 +82,26 @@ async def get_report_detail(
         return await get_report_detail_service(db, report_id)
     except ReportNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.") from exc
+
+
+@router.get("/{report_id}/export/pdf")
+async def export_report_pdf(
+    report_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_report_reviewer),
+) -> Response:
+    try:
+        detail = await get_report_detail_service(db, report_id)
+    except ReportNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.") from exc
+
+    pdf_bytes = build_report_detail_pdf(detail)
+    filename = report_pdf_filename(detail.id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{report_id}/audit-logs", response_model=list[AuditLogResponse])

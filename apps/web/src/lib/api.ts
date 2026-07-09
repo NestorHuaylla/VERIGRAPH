@@ -105,6 +105,33 @@ export async function clearAuthSession(): Promise<void> {
   }).catch(() => undefined);
 }
 
+// Descarga un archivo binario (CSV/PDF) devuelto por el API, respetando la
+// misma autenticacion (cookie httpOnly o Bearer de NextAuth) que apiFetch,
+// y dispara la descarga en el navegador sin necesidad de un <a href> directo
+// (un link directo al API no llevaria el header Authorization del flujo
+// Keycloak/NextAuth).
+export async function downloadApiFile(path: string, fallbackFilename: string): Promise<void> {
+  const response = await apiFetch(path, { method: "GET" });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorResponse(response));
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filenameMatch = /filename="?([^"]+)"?/.exec(disposition);
+  const filename = filenameMatch?.[1] ?? fallbackFilename;
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
 async function parseErrorResponse(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { detail?: unknown; message?: unknown };

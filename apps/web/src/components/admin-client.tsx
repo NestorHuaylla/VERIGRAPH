@@ -6,6 +6,7 @@ import {
   Archive,
   CheckCircle2,
   Clock3,
+  Download,
   FileText,
   History,
   Loader2,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-import { ApiError, apiFetch, apiGet, apiPatch } from "@/lib/api";
+import { ApiError, apiFetch, apiGet, apiPatch, downloadApiFile } from "@/lib/api";
 import type {
   AppealStatus,
   AppealResponse,
@@ -119,6 +120,9 @@ export function AdminClient() {
   const [creatingCaseForReportId, setCreatingCaseForReportId] = useState<string | null>(null);
   const [detailActionError, setDetailActionError] = useState<string | null>(null);
   const [detailActionMessage, setDetailActionMessage] = useState<string | null>(null);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [exportingPdfReportId, setExportingPdfReportId] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const hasReports = useMemo(() => reports.length > 0, [reports.length]);
   const selectedReport = useMemo(
@@ -145,6 +149,41 @@ export function AdminClient() {
       setSelectedReportId(null);
       setDetailState(emptyDetailState);
       setLoadState({ loading: false, error: detail, demo: true });
+    }
+  }, []);
+
+  const handleExportCsv = useCallback(async () => {
+    setExportingCsv(true);
+    setExportError(null);
+    try {
+      await downloadApiFile("/api/v1/reports/export/csv?limit=1000", "verigraph-reportes.csv");
+    } catch (caughtError) {
+      setExportError(
+        caughtError instanceof ApiError
+          ? caughtError.detail
+          : "No se pudo generar el CSV. Verifica tu sesion e intenta de nuevo."
+      );
+    } finally {
+      setExportingCsv(false);
+    }
+  }, []);
+
+  const handleExportPdf = useCallback(async (report: ReportListItem) => {
+    setExportingPdfReportId(report.id);
+    setExportError(null);
+    try {
+      await downloadApiFile(
+        `/api/v1/reports/${report.id}/export/pdf`,
+        `verigraph-reporte-${report.id}.pdf`
+      );
+    } catch (caughtError) {
+      setExportError(
+        caughtError instanceof ApiError
+          ? caughtError.detail
+          : "No se pudo generar el PDF. Verifica tu sesion e intenta de nuevo."
+      );
+    } finally {
+      setExportingPdfReportId(null);
     }
   }, []);
 
@@ -327,15 +366,32 @@ export function AdminClient() {
             Revision de reportes, estados, evidencia, apelaciones y auditoria.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadReports()}
-          className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-md border border-border bg-panel px-4 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-[#172236]"
-        >
-          <RefreshCw className={loadState.loading ? "animate-spin" : ""} size={16} />
-          Refrescar
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => void handleExportCsv()}
+            disabled={exportingCsv}
+            className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-md border border-border bg-panel px-4 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-[#172236] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {exportingCsv ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />}
+            Exportar CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadReports()}
+            className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-md border border-border bg-panel px-4 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-[#172236]"
+          >
+            <RefreshCw className={loadState.loading ? "animate-spin" : ""} size={16} />
+            Refrescar
+          </button>
+        </div>
       </div>
+
+      {exportError ? (
+        <p className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-300">
+          {exportError}
+        </p>
+      ) : null}
 
       {loadState.error ? (
         <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
@@ -443,6 +499,8 @@ export function AdminClient() {
           onCreateCase={() => void createCaseFromSelectedReport()}
           actionMessage={detailActionMessage}
           onRefresh={selectedReport ? () => void loadReportDetail(selectedReport) : undefined}
+          onExportPdf={selectedReport ? () => void handleExportPdf(selectedReport) : undefined}
+          exportingPdf={selectedReport ? exportingPdfReportId === selectedReport.id : false}
         />
       </div>
     </section>
@@ -460,7 +518,9 @@ function ReportDetailPanel({
   onUpdateAppealStatus,
   onCreateCase,
   actionMessage,
-  onRefresh
+  onRefresh,
+  onExportPdf,
+  exportingPdf
 }: {
   state: ReportDetailState;
   selectedReport: ReportListItem | null;
@@ -473,6 +533,8 @@ function ReportDetailPanel({
   onCreateCase: () => void;
   actionMessage: string | null;
   onRefresh?: () => void;
+  onExportPdf?: () => void;
+  exportingPdf?: boolean;
 }) {
   if (!selectedReport) {
     return (
@@ -530,13 +592,24 @@ function ReportDetailPanel({
           <h2 className="mt-1 break-words text-lg font-semibold text-white">{report.entity_value ?? "Sin entidad"}</h2>
           <p className="mt-1 break-words text-xs text-slate-400">{report.entity_normalized_value ?? "Sin normalizar"}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-start gap-2">
           <StatusPill label={statusLabels[report.status]} tone="neutral" />
           {report.risk_level ? (
             <StatusPill label={`${riskLabels[report.risk_level]} ${report.risk_score ?? ""}`} tone={report.risk_level} />
           ) : (
             <StatusPill label="Sin score" tone="neutral" />
           )}
+          {onExportPdf && !state.demo ? (
+            <button
+              type="button"
+              onClick={onExportPdf}
+              disabled={exportingPdf}
+              className="focus-ring inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border bg-[#101a2b] px-3 text-xs text-slate-200 transition hover:border-slate-500 hover:bg-[#172236] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {exportingPdf ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
+              PDF
+            </button>
+          ) : null}
         </div>
       </div>
 

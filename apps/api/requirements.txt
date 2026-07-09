@@ -12,4 +12,5 @@ python-multipart
 email-validator
 neo4j
 boto3
+reportlab
 
