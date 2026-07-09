@@ -821,3 +821,20 @@ Nota importante
 - El problema no fue normalizacion del correo ni CORS.
 - El problema principal fue inconsistencia entre `.env.production`, Compose y la password real guardada en el volumen de PostgreSQL.
 - En produccion se recomienda cambiar `poni4545` por secretos largos y distintos para `POSTGRES_PASSWORD`, `DATABASE_URL`, `JWT_SECRET`, `NEXTAUTH_SECRET`, `WORKER_API_TOKEN`, `NEO4J_PASSWORD`, `MINIO_ROOT_PASSWORD` y `S3_SECRET_KEY`.
+
+---
+
+## Auditoria de seguridad (Claude) - Julio 2026
+
+Se revisaron y corrigieron 6 hallazgos de la auditoria de codigo. Estado: 1 y 2 ya en main (commits 8c4e940, 43001ce). 3-6 en este mismo patch.
+
+1. [OK] IP spoofing via X-Forwarded-For/X-Real-IP sin validar proxy confiable -> apps/api/app/services/abuse.py
+2. [OK] JWT en localStorage (riesgo XSS) -> movido a cookie httpOnly -> apps/web/src/lib/api.ts + apps/api/app/api/v1/endpoints/auth.py
+3. [OK] Cache de JWKS de Keycloak nunca se refrescaba (rotacion de llaves tumbaba logins hasta reiniciar) -> apps/api/app/core/security.py (TTL 10 min + refresh forzado si el kid no aparece)
+4. [OK] Rate limiter creaba una conexion Redis nueva por cada request -> apps/api/app/core/rate_limit.py (cliente compartido via lru_cache)
+5. [OK] Sin validacion de secretos por defecto en produccion -> apps/api/app/core/config.py (model_validator: si APP_ENV=production y jwt_secret/neo4j_password/s3_secret_key siguen en su default, la app no arranca)
+6. [OK] app_debug definido pero sin usar -> conectado de verdad en apps/api/app/main.py (FastAPI(debug=settings.app_debug)), default cambiado a False
+
+Todos verificados con pytest (238 tests pasando) antes de generar el patch. Pendiente: aplicar el patch fix-03-06-security-hardening.patch y confirmar en main.
+
+Proximos candidatos a revisar (no urgentes): CI/CD (GitHub Actions), observabilidad/logs, exportacion PDF/CSV, migrar el simulador de grafo a 3d-force-graph para manejar mas nodos en 3D.

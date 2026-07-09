@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -12,6 +12,14 @@ from app.core.constants import UserRole
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 JWT_ALGORITHM = "HS256"
 OIDC_ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
+
+# Las llaves de firma de Keycloak (JWKS) pueden rotar. Cachearlas para
+# siempre (como hacia @lru_cache(maxsize=1) antes) hacia que, tras una
+# rotacion, TODOS los logins via Keycloak fallaran hasta reiniciar el
+# proceso. Ahora el cache expira solo (TTL) y ademas se refresca de
+# inmediato si un `kid` no aparece en las llaves que tenemos guardadas.
+_JWKS_CACHE_TTL_SECONDS = 600  # 10 minutos
+_jwks_cache: dict[str, Any] = {"payload": None, "fetched_at": 0.0}
 
 
 def hash_password(password: str) -> str:
@@ -86,20 +94,40 @@ def decode_oidc_access_token(token: str) -> dict[str, Any] | None:
 def find_jwks_key(header: dict[str, Any]) -> dict[str, Any] | None:
     kid = header.get("kid")
     jwks = get_oidc_jwks()
+    key = _match_jwks_key(jwks, kid)
+    if key is not None or kid is None:
+        return key
+
+    # El kid no esta en nuestro cache: puede ser una rotacion reciente de
+    # llaves en Keycloak. Forzamos un refresh antes de rendirnos.
+    jwks = get_oidc_jwks(force_refresh=True)
+    return _match_jwks_key(jwks, kid)
+
+
+def _match_jwks_key(jwks: dict[str, Any], kid: str | None) -> dict[str, Any] | None:
     for key in jwks.get("keys", []):
         if kid is None or key.get("kid") == kid:
             return key
     return None
 
 
-@lru_cache(maxsize=1)
-def get_oidc_jwks() -> dict[str, Any]:
+def get_oidc_jwks(*, force_refresh: bool = False) -> dict[str, Any]:
+    now = monotonic()
+    cached_payload = _jwks_cache["payload"]
+    is_stale = (now - _jwks_cache["fetched_at"]) > _JWKS_CACHE_TTL_SECONDS
+
+    if cached_payload is not None and not force_refresh and not is_stale:
+        return cached_payload
+
     issuer = settings.keycloak_issuer.rstrip("/")
     response = httpx.get(f"{issuer}/protocol/openid-connect/certs", timeout=5)
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
         raise ValueError("OIDC JWKS response must be an object.")
+
+    _jwks_cache["payload"] = payload
+    _jwks_cache["fetched_at"] = now
     return payload
 
 

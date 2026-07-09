@@ -1,0 +1,339 @@
+diff --git a/CONTINUAR CON.txt b/CONTINUAR CON.txt
+index 9ff8f48..00dbc80 100644
+--- a/CONTINUAR CON.txt	
++++ b/CONTINUAR CON.txt	
+@@ -821,3 +821,20 @@ Nota importante
+ - El problema no fue normalizacion del correo ni CORS.
+ - El problema principal fue inconsistencia entre `.env.production`, Compose y la password real guardada en el volumen de PostgreSQL.
+ - En produccion se recomienda cambiar `poni4545` por secretos largos y distintos para `POSTGRES_PASSWORD`, `DATABASE_URL`, `JWT_SECRET`, `NEXTAUTH_SECRET`, `WORKER_API_TOKEN`, `NEO4J_PASSWORD`, `MINIO_ROOT_PASSWORD` y `S3_SECRET_KEY`.
++
++---
++
++## Auditoria de seguridad (Claude) - Julio 2026
++
++Se revisaron y corrigieron 6 hallazgos de la auditoria de codigo. Estado: 1 y 2 ya en main (commits 8c4e940, 43001ce). 3-6 en este mismo patch.
++
++1. [OK] IP spoofing via X-Forwarded-For/X-Real-IP sin validar proxy confiable -> apps/api/app/services/abuse.py
++2. [OK] JWT en localStorage (riesgo XSS) -> movido a cookie httpOnly -> apps/web/src/lib/api.ts + apps/api/app/api/v1/endpoints/auth.py
++3. [OK] Cache de JWKS de Keycloak nunca se refrescaba (rotacion de llaves tumbaba logins hasta reiniciar) -> apps/api/app/core/security.py (TTL 10 min + refresh forzado si el kid no aparece)
++4. [OK] Rate limiter creaba una conexion Redis nueva por cada request -> apps/api/app/core/rate_limit.py (cliente compartido via lru_cache)
++5. [OK] Sin validacion de secretos por defecto en produccion -> apps/api/app/core/config.py (model_validator: si APP_ENV=production y jwt_secret/neo4j_password/s3_secret_key siguen en su default, la app no arranca)
++6. [OK] app_debug definido pero sin usar -> conectado de verdad en apps/api/app/main.py (FastAPI(debug=settings.app_debug)), default cambiado a False
++
++Todos verificados con pytest (238 tests pasando) antes de generar el patch. Pendiente: aplicar el patch fix-03-06-security-hardening.patch y confirmar en main.
++
++Proximos candidatos a revisar (no urgentes): CI/CD (GitHub Actions), observabilidad/logs, exportacion PDF/CSV, migrar el simulador de grafo a 3d-force-graph para manejar mas nodos en 3D.
+diff --git a/apps/api/app/core/config.py b/apps/api/app/core/config.py
+index dfa3ebd..391bab9 100644
+--- a/apps/api/app/core/config.py
++++ b/apps/api/app/core/config.py
+@@ -1,6 +1,6 @@
+ from functools import lru_cache
+ 
+-from pydantic import Field
++from pydantic import Field, model_validator
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+ 
+ 
+@@ -19,7 +19,10 @@ class Settings(BaseSettings):
+ 
+     app_name: str = "VERIGRAPH"
+     app_env: str = "local"
+-    app_debug: bool = True
++    # Antes este valor no se usaba en ningun lado (config muerta). Ahora se
++    # conecta de verdad en app/main.py via FastAPI(debug=...). Default en
++    # False: activarlo explicitamente solo en desarrollo si hace falta.
++    app_debug: bool = False
+     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+     cors_origin_regex: str | None = LOCAL_NETWORK_CORS_ORIGIN_REGEX
+ 
+@@ -75,6 +78,29 @@ class Settings(BaseSettings):
+     auth_cookie_secure: bool = False  # poner en True detras de HTTPS (prod)
+     auth_cookie_samesite: str = "lax"
+ 
++    @model_validator(mode="after")
++    def _reject_default_secrets_in_production(self) -> "Settings":
++        # Si alguien olvida configurar el .env en un deploy real, la app no
++        # debe arrancar igual con el JWT secret / password de Neo4j / secret
++        # key de S3 que estan publicos en este repo. Solo aplica cuando
++        # APP_ENV=production; en local/desarrollo los defaults son validos.
++        if self.app_env != "production":
++            return self
++
++        unsafe_defaults = {
++            "jwt_secret": "change-me-local-jwt-secret",
++            "neo4j_password": "verigraph-local",
++            "s3_secret_key": "verigraph-local",
++        }
++        offending = [name for name, default in unsafe_defaults.items() if getattr(self, name) == default]
++        if offending:
++            raise ValueError(
++                "APP_ENV=production pero estas variables siguen con su valor "
++                f"por defecto (inseguro): {', '.join(offending)}. "
++                "Configuralas en el .env de produccion antes de arrancar."
++            )
++        return self
++
+ 
+ @lru_cache
+ def get_settings() -> Settings:
+diff --git a/apps/api/app/core/rate_limit.py b/apps/api/app/core/rate_limit.py
+index b60903b..f06024e 100644
+--- a/apps/api/app/core/rate_limit.py
++++ b/apps/api/app/core/rate_limit.py
+@@ -1,3 +1,4 @@
++from functools import lru_cache
+ from time import time
+ 
+ import redis.asyncio as redis
+@@ -7,20 +8,26 @@ from app.core.config import settings
+ from app.services.abuse import get_client_ip
+ 
+ 
++@lru_cache
++def get_redis_client() -> redis.Redis:
++    # Un solo cliente (y su pool de conexiones interno) reutilizado durante
++    # toda la vida del proceso. Antes se creaba y cerraba una conexion TCP
++    # nueva a Redis en CADA request, lo que agrega latencia innecesaria y
++    # puede saturar conexiones bajo carga.
++    return redis.from_url(settings.redis_url, decode_responses=True)
++
++
+ async def enforce_rate_limit(request: Request) -> None:
+     client_ip = get_client_ip(request)
+     window = int(time() // 60)
+     key = f"rate:{client_ip}:{window}"
+ 
+-    client = redis.from_url(settings.redis_url, decode_responses=True)
+-    try:
+-        count = await client.incr(key)
+-        if count == 1:
+-            await client.expire(key, 70)
+-        if count > settings.rate_limit_per_minute:
+-            raise HTTPException(
+-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+-                detail="Rate limit exceeded",
+-            )
+-    finally:
+-        await client.aclose()
++    client = get_redis_client()
++    count = await client.incr(key)
++    if count == 1:
++        await client.expire(key, 70)
++    if count > settings.rate_limit_per_minute:
++        raise HTTPException(
++            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
++            detail="Rate limit exceeded",
++        )
+diff --git a/apps/api/app/core/security.py b/apps/api/app/core/security.py
+index 4fb2817..6302e5f 100644
+--- a/apps/api/app/core/security.py
++++ b/apps/api/app/core/security.py
+@@ -1,5 +1,5 @@
+ from datetime import datetime, timedelta, timezone
+-from functools import lru_cache
++from time import monotonic
+ from typing import Any
+ 
+ import httpx
+@@ -13,6 +13,14 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+ JWT_ALGORITHM = "HS256"
+ OIDC_ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
+ 
++# Las llaves de firma de Keycloak (JWKS) pueden rotar. Cachearlas para
++# siempre (como hacia @lru_cache(maxsize=1) antes) hacia que, tras una
++# rotacion, TODOS los logins via Keycloak fallaran hasta reiniciar el
++# proceso. Ahora el cache expira solo (TTL) y ademas se refresca de
++# inmediato si un `kid` no aparece en las llaves que tenemos guardadas.
++_JWKS_CACHE_TTL_SECONDS = 600  # 10 minutos
++_jwks_cache: dict[str, Any] = {"payload": None, "fetched_at": 0.0}
++
+ 
+ def hash_password(password: str) -> str:
+     return pwd_context.hash(password)
+@@ -86,20 +94,40 @@ def decode_oidc_access_token(token: str) -> dict[str, Any] | None:
+ def find_jwks_key(header: dict[str, Any]) -> dict[str, Any] | None:
+     kid = header.get("kid")
+     jwks = get_oidc_jwks()
++    key = _match_jwks_key(jwks, kid)
++    if key is not None or kid is None:
++        return key
++
++    # El kid no esta en nuestro cache: puede ser una rotacion reciente de
++    # llaves en Keycloak. Forzamos un refresh antes de rendirnos.
++    jwks = get_oidc_jwks(force_refresh=True)
++    return _match_jwks_key(jwks, kid)
++
++
++def _match_jwks_key(jwks: dict[str, Any], kid: str | None) -> dict[str, Any] | None:
+     for key in jwks.get("keys", []):
+         if kid is None or key.get("kid") == kid:
+             return key
+     return None
+ 
+ 
+-@lru_cache(maxsize=1)
+-def get_oidc_jwks() -> dict[str, Any]:
++def get_oidc_jwks(*, force_refresh: bool = False) -> dict[str, Any]:
++    now = monotonic()
++    cached_payload = _jwks_cache["payload"]
++    is_stale = (now - _jwks_cache["fetched_at"]) > _JWKS_CACHE_TTL_SECONDS
++
++    if cached_payload is not None and not force_refresh and not is_stale:
++        return cached_payload
++
+     issuer = settings.keycloak_issuer.rstrip("/")
+     response = httpx.get(f"{issuer}/protocol/openid-connect/certs", timeout=5)
+     response.raise_for_status()
+     payload = response.json()
+     if not isinstance(payload, dict):
+         raise ValueError("OIDC JWKS response must be an object.")
++
++    _jwks_cache["payload"] = payload
++    _jwks_cache["fetched_at"] = now
+     return payload
+ 
+ 
+diff --git a/apps/api/app/main.py b/apps/api/app/main.py
+index f1c0cc3..9ec87e0 100644
+--- a/apps/api/app/main.py
++++ b/apps/api/app/main.py
+@@ -10,6 +10,7 @@ def create_app() -> FastAPI:
+         title=settings.app_name,
+         version="0.1.0",
+         description="API para analisis de riesgo digital basado en evidencia, grafos y revision humana.",
++        debug=settings.app_debug,
+     )
+ 
+     app.add_middleware(
+diff --git a/apps/api/tests/test_config_production_secrets.py b/apps/api/tests/test_config_production_secrets.py
+new file mode 100644
+index 0000000..106a9a9
+--- /dev/null
++++ b/apps/api/tests/test_config_production_secrets.py
+@@ -0,0 +1,23 @@
++import pytest
++
++from app.core.config import Settings
++
++
++def test_settings_allow_default_secrets_in_local_env() -> None:
++    settings = Settings(app_env="local")
++    assert settings.jwt_secret == "change-me-local-jwt-secret"
++
++
++def test_settings_reject_default_jwt_secret_in_production() -> None:
++    with pytest.raises(ValueError, match="jwt_secret"):
++        Settings(app_env="production")
++
++
++def test_settings_allow_production_with_all_secrets_overridden() -> None:
++    settings = Settings(
++        app_env="production",
++        jwt_secret="a-real-random-secret",
++        neo4j_password="a-real-neo4j-password",
++        s3_secret_key="a-real-s3-secret",
++    )
++    assert settings.app_env == "production"
+diff --git a/apps/api/tests/test_rate_limit_client_reuse.py b/apps/api/tests/test_rate_limit_client_reuse.py
+new file mode 100644
+index 0000000..cbbbade
+--- /dev/null
++++ b/apps/api/tests/test_rate_limit_client_reuse.py
+@@ -0,0 +1,11 @@
++from app.core.rate_limit import get_redis_client
++
++
++def test_get_redis_client_returns_same_instance_across_calls() -> None:
++    first = get_redis_client()
++    second = get_redis_client()
++
++    # Antes, cada llamada a enforce_rate_limit creaba un cliente Redis nuevo
++    # (una conexion TCP nueva) por request. Ahora debe reutilizarse el mismo
++    # cliente (y su pool de conexiones interno) durante toda la vida del proceso.
++    assert first is second
+diff --git a/apps/api/tests/test_security_jwks_cache.py b/apps/api/tests/test_security_jwks_cache.py
+new file mode 100644
+index 0000000..98c7978
+--- /dev/null
++++ b/apps/api/tests/test_security_jwks_cache.py
+@@ -0,0 +1,79 @@
++import app.core.security as security_module
++
++
++def _reset_jwks_cache() -> None:
++    security_module._jwks_cache["payload"] = None
++    security_module._jwks_cache["fetched_at"] = 0.0
++
++
++def test_get_oidc_jwks_refetches_after_ttl_expires(monkeypatch) -> None:
++    _reset_jwks_cache()
++    monkeypatch.setattr(security_module.settings, "keycloak_issuer", "https://kc.example.com/realms/verigraph")
++
++    calls: list[int] = []
++
++    class FakeResponse:
++        def __init__(self, payload: dict) -> None:
++            self._payload = payload
++
++        def raise_for_status(self) -> None:
++            return None
++
++        def json(self) -> dict:
++            return self._payload
++
++    def fake_get(url: str, timeout: int = 5) -> FakeResponse:
++        calls.append(1)
++        return FakeResponse({"keys": [{"kid": f"key-{len(calls)}"}]})
++
++    monkeypatch.setattr(security_module.httpx, "get", fake_get)
++
++    # tiempo simulado: primera llamada cachea, segunda dentro del TTL reusa cache
++    fake_time = [1000.0]
++    monkeypatch.setattr(security_module, "monotonic", lambda: fake_time[0])
++
++    first = security_module.get_oidc_jwks()
++    second = security_module.get_oidc_jwks()
++    assert first == second
++    assert len(calls) == 1  # la segunda llamada uso el cache, no volvio a pedir a Keycloak
++
++    # avanzamos el tiempo mas alla del TTL: debe refrescar solo
++    fake_time[0] += security_module._JWKS_CACHE_TTL_SECONDS + 1
++    third = security_module.get_oidc_jwks()
++    assert len(calls) == 2
++    assert third != first
++
++
++def test_find_jwks_key_forces_refresh_when_kid_rotated(monkeypatch) -> None:
++    _reset_jwks_cache()
++    monkeypatch.setattr(security_module.settings, "keycloak_issuer", "https://kc.example.com/realms/verigraph")
++
++    responses = [
++        {"keys": [{"kid": "old-key"}]},
++        {"keys": [{"kid": "new-key"}]},
++    ]
++
++    class FakeResponse:
++        def __init__(self, payload: dict) -> None:
++            self._payload = payload
++
++        def raise_for_status(self) -> None:
++            return None
++
++        def json(self) -> dict:
++            return self._payload
++
++    def fake_get(url: str, timeout: int = 5) -> FakeResponse:
++        return FakeResponse(responses.pop(0) if responses else {"keys": [{"kid": "new-key"}]})
++
++    monkeypatch.setattr(security_module.httpx, "get", fake_get)
++    monkeypatch.setattr(security_module, "monotonic", lambda: 1000.0)
++
++    # Primera consulta cachea la llave vieja.
++    security_module.get_oidc_jwks()
++
++    # Keycloak roto sus llaves: el kid que llega ya no esta en el cache.
++    # Sin el fix, esto devolveria None (login roto hasta reiniciar el server).
++    key = security_module.find_jwks_key({"kid": "new-key"})
++
++    assert key == {"kid": "new-key"}

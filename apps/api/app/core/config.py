@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +19,10 @@ class Settings(BaseSettings):
 
     app_name: str = "VERIGRAPH"
     app_env: str = "local"
-    app_debug: bool = True
+    # Antes este valor no se usaba en ningun lado (config muerta). Ahora se
+    # conecta de verdad en app/main.py via FastAPI(debug=...). Default en
+    # False: activarlo explicitamente solo en desarrollo si hace falta.
+    app_debug: bool = False
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     cors_origin_regex: str | None = LOCAL_NETWORK_CORS_ORIGIN_REGEX
 
@@ -74,6 +77,29 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "verigraph_access_token"
     auth_cookie_secure: bool = False  # poner en True detras de HTTPS (prod)
     auth_cookie_samesite: str = "lax"
+
+    @model_validator(mode="after")
+    def _reject_default_secrets_in_production(self) -> "Settings":
+        # Si alguien olvida configurar el .env en un deploy real, la app no
+        # debe arrancar igual con el JWT secret / password de Neo4j / secret
+        # key de S3 que estan publicos en este repo. Solo aplica cuando
+        # APP_ENV=production; en local/desarrollo los defaults son validos.
+        if self.app_env != "production":
+            return self
+
+        unsafe_defaults = {
+            "jwt_secret": "change-me-local-jwt-secret",
+            "neo4j_password": "verigraph-local",
+            "s3_secret_key": "verigraph-local",
+        }
+        offending = [name for name, default in unsafe_defaults.items() if getattr(self, name) == default]
+        if offending:
+            raise ValueError(
+                "APP_ENV=production pero estas variables siguen con su valor "
+                f"por defecto (inseguro): {', '.join(offending)}. "
+                "Configuralas en el .env de produccion antes de arrancar."
+            )
+        return self
 
 
 @lru_cache

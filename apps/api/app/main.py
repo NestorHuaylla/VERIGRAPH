@@ -10,6 +10,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version="0.1.0",
         description="API para analisis de riesgo digital basado en evidencia, grafos y revision humana.",
+        debug=settings.app_debug,
     )
 
     app.add_middleware(
