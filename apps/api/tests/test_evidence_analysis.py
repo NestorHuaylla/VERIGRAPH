@@ -8,9 +8,11 @@ from app.models.entity import Entity, EntityRelation
 from app.models.evidence import EvidenceFile
 from app.models.notification import Notification, NotificationDelivery
 from app.models.report import Report
+from app.services.ai_vision import VisionOutcome
+from app.services.ocr import OcrOutcome
 from app.services.evidence_analysis import (
-    AiVisionExtractorStub,
-    OcrExtractorStub,
+    AiVisionExtractor,
+    OcrExtractor,
     PlainTextExtractor,
     build_evidence_analysis_metadata,
     get_text_extractor,
@@ -128,12 +130,12 @@ def test_get_text_extractor_selects_plain_text() -> None:
     assert isinstance(get_text_extractor("text/plain"), PlainTextExtractor)
 
 
-def test_get_text_extractor_selects_ocr_stub_by_default() -> None:
-    assert isinstance(get_text_extractor("image/png"), OcrExtractorStub)
+def test_get_text_extractor_selects_ocr_by_default() -> None:
+    assert isinstance(get_text_extractor("image/png"), OcrExtractor)
 
 
-def test_get_text_extractor_selects_ai_stub_when_requested() -> None:
-    assert isinstance(get_text_extractor("image/png", prefer_ai=True), AiVisionExtractorStub)
+def test_get_text_extractor_selects_ai_vision_when_requested() -> None:
+    assert isinstance(get_text_extractor("image/png", prefer_ai=True), AiVisionExtractor)
 
 
 def test_build_evidence_analysis_metadata_prepares_ai_provider() -> None:
@@ -141,8 +143,127 @@ def test_build_evidence_analysis_metadata_prepares_ai_provider() -> None:
 
     assert metadata["analysis"]["status"] == "queued"
     assert metadata["analysis"]["engine"] == "ai_vision"
-    assert metadata["analysis"]["provider"] == "openai_stub"
+    assert metadata["analysis"]["provider"] == "claude_vision"
     assert metadata["analysis"]["relation_type"] == "mentioned_in_evidence"
+
+
+def make_image_evidence(report_id, local_path: Path, *, content_type: str = "image/png") -> EvidenceFile:
+    evidence = EvidenceFile(
+        report_id=report_id,
+        object_key=f"reports/{report_id}/evidence/test.png",
+        filename="evidencia.png",
+        content_type=content_type,
+        sha256="b" * 64,
+        metadata_json={"local_path": str(local_path)},
+    )
+    evidence.id = uuid4()
+    evidence.created_at = datetime(2026, 5, 27, tzinfo=timezone.utc)
+    return evidence
+
+
+def test_ocr_extractor_uses_tesseract_when_reliable(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "evidencia.png"
+    path.write_bytes(b"fake-image-bytes")
+    evidence = make_image_evidence(uuid4(), path)
+
+    monkeypatch.setattr(
+        "app.services.evidence_analysis.run_tesseract_ocr",
+        lambda file_bytes, lang: OcrOutcome(text="Contacto +51 999 999 999", confidence=92.0),
+    )
+
+    extraction = asyncio.run(OcrExtractor().extract(evidence))
+
+    assert extraction.status == "completed"
+    assert extraction.engine == "ocr"
+    assert extraction.provider == "tesseract"
+    assert extraction.extracted_text == "Contacto +51 999 999 999"
+
+
+def test_ocr_extractor_falls_back_to_ai_vision_when_unreliable(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "evidencia.png"
+    path.write_bytes(b"fake-image-bytes")
+    evidence = make_image_evidence(uuid4(), path)
+
+    monkeypatch.setattr(
+        "app.services.evidence_analysis.run_tesseract_ocr",
+        lambda file_bytes, lang: OcrOutcome(text="a", confidence=10.0),
+    )
+    monkeypatch.setattr(
+        "app.services.evidence_analysis.run_claude_vision_ocr",
+        lambda file_bytes, *, content_type, api_key, model: VisionOutcome(
+            text="Contacto +51 999 999 999", model=model
+        ),
+    )
+
+    extraction = asyncio.run(OcrExtractor().extract(evidence))
+
+    assert extraction.status == "completed"
+    assert extraction.engine == "ai_vision"
+    assert extraction.provider == "claude_vision"
+    assert extraction.extracted_text == "Contacto +51 999 999 999"
+
+
+def test_ocr_extractor_routes_pdf_directly_to_ai_vision(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "evidencia.pdf"
+    path.write_bytes(b"%PDF-1.4 fake")
+    evidence = make_image_evidence(uuid4(), path, content_type="application/pdf")
+
+    called = {"tesseract": False}
+
+    def fail_if_called(*args, **kwargs):
+        called["tesseract"] = True
+        raise AssertionError("Tesseract no deberia llamarse para PDFs")
+
+    monkeypatch.setattr("app.services.evidence_analysis.run_tesseract_ocr", fail_if_called)
+    monkeypatch.setattr(
+        "app.services.evidence_analysis.run_claude_vision_ocr",
+        lambda file_bytes, *, content_type, api_key, model: VisionOutcome(
+            text="Texto del PDF", model=model
+        ),
+    )
+
+    extraction = asyncio.run(OcrExtractor().extract(evidence))
+
+    assert called["tesseract"] is False
+    assert extraction.status == "completed"
+    assert extraction.engine == "ai_vision"
+    assert extraction.extracted_text == "Texto del PDF"
+
+
+def test_ai_vision_extractor_calls_claude_vision_directly(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "evidencia.png"
+    path.write_bytes(b"fake-image-bytes")
+    evidence = make_image_evidence(uuid4(), path)
+
+    monkeypatch.setattr(
+        "app.services.evidence_analysis.run_claude_vision_ocr",
+        lambda file_bytes, *, content_type, api_key, model: VisionOutcome(
+            text="Contacto +51 999 999 999", model=model
+        ),
+    )
+
+    extraction = asyncio.run(AiVisionExtractor().extract(evidence))
+
+    assert extraction.status == "completed"
+    assert extraction.engine == "ai_vision"
+    assert extraction.provider == "claude_vision"
+    assert extraction.extracted_text == "Contacto +51 999 999 999"
+
+
+def test_ai_vision_extractor_reports_failure_when_no_text_found(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "evidencia.png"
+    path.write_bytes(b"fake-image-bytes")
+    evidence = make_image_evidence(uuid4(), path)
+
+    monkeypatch.setattr(
+        "app.services.evidence_analysis.run_claude_vision_ocr",
+        lambda file_bytes, *, content_type, api_key, model: VisionOutcome(text="", model=model),
+    )
+
+    extraction = asyncio.run(AiVisionExtractor().extract(evidence))
+
+    assert extraction.status == "failed"
+    assert extraction.error is not None
 
 
 def test_plain_text_extractor_reads_local_file(tmp_path: Path) -> None:

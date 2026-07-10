@@ -278,10 +278,18 @@ def ensure_s3_bucket(client: S3Client, bucket: str) -> None:
 
 
 def read_s3_object_text(object_key: str, *, s3_client: S3Client | None = None) -> str:
+    body = read_s3_object_bytes(object_key, s3_client=s3_client)
+    return body.decode("utf-8", errors="replace")
+
+
+def read_s3_object_bytes(object_key: str, *, s3_client: S3Client | None = None) -> bytes:
+    """Lee el contenido binario crudo de un objeto en S3. A diferencia de
+    read_s3_object_text, no decodifica a UTF-8: se usa para imagenes y
+    PDFs que van a OCR / AI Vision, donde decodificar como texto
+    corromperia los bytes."""
     client = s3_client or build_s3_client()
     try:
         response = client.get_object(Bucket=settings.s3_bucket_evidence, Key=object_key)
-        body = response["Body"].read()
+        return response["Body"].read()
     except (BotoCoreError, ClientError, OSError, KeyError) as exc:
         raise S3EvidenceStorageError(f"Could not read evidence from S3: {exc}") from exc
-    return body.decode("utf-8", errors="replace")

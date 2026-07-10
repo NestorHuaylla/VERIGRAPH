@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -7,13 +9,18 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.entity import Entity
 from app.models.evidence import EvidenceFile
 from app.models.report import Report
+from app.services.ai_vision import ClaudeVisionUnavailableError, run_claude_vision_ocr
 from app.services.notifications import create_evidence_analysis_notification
+from app.services.ocr import TesseractUnavailableError, is_ocr_result_reliable, run_tesseract_ocr
 from app.services.relations import create_entity_relations_from_text
 from app.services.reports import ReportNotFoundError
-from app.services.storage import EvidenceStorageError, read_s3_object_text
+from app.services.storage import EvidenceStorageError, read_s3_object_bytes, read_s3_object_text
+
+logger = logging.getLogger(__name__)
 
 
 OCR_CONTENT_TYPES = frozenset(
@@ -114,27 +121,144 @@ class PlainTextExtractor(EvidenceTextExtractor):
         )
 
 
-class OcrExtractorStub(EvidenceTextExtractor):
+async def read_evidence_bytes(evidence: EvidenceFile) -> bytes:
+    """Lee el contenido binario crudo de la evidencia, sin importar si
+    esta en el filesystem local o en S3. Usado por OCR y AI Vision, que
+    a diferencia de PlainTextExtractor necesitan los bytes originales
+    (una imagen decodificada como UTF-8 quedaria corrupta)."""
+    metadata = evidence.metadata_json or {}
+
+    if metadata.get("storage_backend") == "s3":
+        return await asyncio.to_thread(read_s3_object_bytes, evidence.object_key)
+
+    local_path = metadata.get("local_path")
+    if not local_path:
+        raise EvidenceStorageError("Evidence local path is missing.")
+
+    path = Path(local_path)
+    if not path.exists():
+        raise EvidenceStorageError("Evidence local path does not exist.")
+
+    return await asyncio.to_thread(path.read_bytes)
+
+
+async def run_ai_vision_extraction(
+    file_bytes: bytes, *, content_type: str, engine: str
+) -> EvidenceTextExtraction:
+    """Corre AI Vision (Claude) sobre los bytes dados y arma el
+    EvidenceTextExtraction resultante. Compartido por OcrExtractor
+    (cuando hace fallback) y AiVisionExtractor (motor directo)."""
+    provider = "claude_vision"
+    try:
+        outcome = await asyncio.to_thread(
+            run_claude_vision_ocr,
+            file_bytes,
+            content_type=content_type,
+            api_key=settings.anthropic_api_key,
+            model=settings.claude_vision_model,
+        )
+    except ClaudeVisionUnavailableError as exc:
+        logger.error("AI Vision no disponible: %s", exc)
+        return EvidenceTextExtraction(
+            status="failed", engine=engine, provider=provider, error=str(exc)
+        )
+
+    if outcome.error is not None:
+        return EvidenceTextExtraction(
+            status="failed", engine=engine, provider=provider, error=outcome.error
+        )
+    if not outcome.success:
+        return EvidenceTextExtraction(
+            status="failed",
+            engine=engine,
+            provider=provider,
+            error="AI Vision no encontro texto legible en el archivo.",
+        )
+    return EvidenceTextExtraction(
+        status="completed",
+        engine=engine,
+        provider=provider,
+        extracted_text=outcome.text[:MAX_EXTRACTED_TEXT_CHARS],
+    )
+
+
+class OcrExtractor(EvidenceTextExtractor):
+    """Motor primario para imagenes: Tesseract (local, rapido, gratis).
+
+    Si Tesseract no logra un resultado confiable (poca confianza o muy
+    poco texto extraido) hace fallback automatico a AI Vision. Los PDFs
+    se mandan directo a AI Vision, ya que Tesseract no puede leerlos sin
+    convertirlos antes a imagen.
+    """
+
     engine = "ocr"
-    provider = "tesseract_stub"
+    provider = "tesseract"
 
     async def extract(self, evidence: EvidenceFile) -> EvidenceTextExtraction:
-        return EvidenceTextExtraction(
-            status="queued",
-            engine=self.engine,
-            provider=self.provider,
+        try:
+            file_bytes = await read_evidence_bytes(evidence)
+        except EvidenceStorageError as exc:
+            return EvidenceTextExtraction(
+                status="failed", engine=self.engine, provider=self.provider, error=str(exc)
+            )
+
+        content_type = evidence.content_type.lower()
+
+        if content_type == "application/pdf":
+            return await run_ai_vision_extraction(
+                file_bytes, content_type=content_type, engine="ai_vision"
+            )
+
+        try:
+            outcome = await asyncio.to_thread(
+                run_tesseract_ocr, file_bytes, lang=settings.ocr_language
+            )
+        except TesseractUnavailableError as exc:
+            logger.error("Tesseract no disponible, escalando a AI Vision: %s", exc)
+            return await run_ai_vision_extraction(
+                file_bytes, content_type=content_type, engine="ai_vision"
+            )
+
+        if is_ocr_result_reliable(
+            outcome,
+            min_confidence=settings.ocr_min_confidence,
+            min_word_count=settings.ocr_min_word_count,
+        ):
+            return EvidenceTextExtraction(
+                status="completed",
+                engine=self.engine,
+                provider=self.provider,
+                extracted_text=outcome.text[:MAX_EXTRACTED_TEXT_CHARS],
+            )
+
+        logger.info(
+            "Tesseract no fue confiable (confianza=%.1f, palabras=%d). "
+            "Escalando a AI Vision.",
+            outcome.confidence,
+            outcome.word_count,
+        )
+        return await run_ai_vision_extraction(
+            file_bytes, content_type=content_type, engine="ai_vision"
         )
 
 
-class AiVisionExtractorStub(EvidenceTextExtractor):
+class AiVisionExtractor(EvidenceTextExtractor):
+    """Motor directo a AI Vision (Claude), sin pasar por Tesseract.
+    Se usa cuando el endpoint recibe `prefer_ai=true`."""
+
     engine = "ai_vision"
-    provider = "openai_stub"
+    provider = "claude_vision"
 
     async def extract(self, evidence: EvidenceFile) -> EvidenceTextExtraction:
-        return EvidenceTextExtraction(
-            status="queued",
-            engine=self.engine,
-            provider=self.provider,
+        try:
+            file_bytes = await read_evidence_bytes(evidence)
+        except EvidenceStorageError as exc:
+            return EvidenceTextExtraction(
+                status="failed", engine=self.engine, provider=self.provider, error=str(exc)
+            )
+
+        return await run_ai_vision_extraction(
+            file_bytes, content_type=evidence.content_type.lower(), engine=self.engine
         )
 
 
@@ -239,9 +363,9 @@ def get_text_extractor(content_type: str, *, prefer_ai: bool = False) -> Evidenc
     if normalized_content_type in TEXT_CONTENT_TYPES:
         return PlainTextExtractor()
     if normalized_content_type in OCR_CONTENT_TYPES and prefer_ai:
-        return AiVisionExtractorStub()
+        return AiVisionExtractor()
     if normalized_content_type in OCR_CONTENT_TYPES:
-        return OcrExtractorStub()
+        return OcrExtractor()
     return UnsupportedExtractor()
 
 

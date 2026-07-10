@@ -13,3 +13,8 @@ email-validator
 neo4j
 boto3
 
+# OCR local (Tesseract) + AI Vision (API de Anthropic) para analisis de evidencia
+pytesseract
+pillow
+anthropic
+

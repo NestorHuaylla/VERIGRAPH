@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     max_evidence_upload_mb: int = 20
     local_evidence_storage_path: str = "storage/evidence"
 
+    # Analisis de evidencia: OCR local (Tesseract) + fallback a AI Vision
+    # (API de Anthropic) cuando Tesseract no logra un resultado confiable.
+    anthropic_api_key: str = ""
+    claude_vision_model: str = "claude-sonnet-5"
+    ocr_language: str = "spa+eng"
+    # Umbrales para decidir si el resultado de Tesseract es confiable o
+    # si hace falta escalar a AI Vision.
+    ocr_min_confidence: float = 60.0
+    ocr_min_word_count: int = 3
+
     # IPs/redes de proxies confiables (nginx, load balancer, etc.) autorizadas
     # a enviar X-Forwarded-For / X-Real-IP. Si la conexion TCP no viene de una
     # de estas redes, esos headers se ignoran y se usa la IP directa del
