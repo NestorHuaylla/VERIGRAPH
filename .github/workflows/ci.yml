@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api-tests:
+    name: API tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: apps/api/requirements.txt
+      - name: Install dependencies
+        working-directory: apps/api
+        run: pip install -r requirements.txt pytest
+      - name: Run tests
+        working-directory: apps/api
+        env:
+          PYTHONPATH: .
+        run: python -m pytest tests/ -q
+
+  worker-tests:
+    name: Worker tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: apps/worker/requirements.txt
+      - name: Install dependencies
+        working-directory: apps/worker
+        run: pip install -r requirements.txt pytest pytest-httpx
+      - name: Run tests
+        working-directory: apps/worker
+        env:
+          PYTHONPATH: .
+        run: python -m pytest tests/ -q
+
+  web-build:
+    name: Web typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: corepack pnpm --dir apps/web typecheck
+      - name: Build
+        run: corepack pnpm --dir apps/web build
